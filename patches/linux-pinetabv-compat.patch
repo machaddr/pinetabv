@@ -1,0 +1,1067 @@
+diff --git i/arch/riscv/boot/dts/starfive/jh7110-pinetab-v.dtsi w/arch/riscv/boot/dts/starfive/jh7110-pinetab-v.dtsi
+index 2662594d1..cc56ed95c 100755
+--- i/arch/riscv/boot/dts/starfive/jh7110-pinetab-v.dtsi
++++ w/arch/riscv/boot/dts/starfive/jh7110-pinetab-v.dtsi
+@@ -654,6 +654,7 @@ panel_radxa@19 {
+ 		reset-gpio = <&sysgpio 51 0>;
+ 		blen-gpio = <&sysgpio 45 0>;
+ 		enable-gpio = <&sysgpio 37 0>;
++		panel-orientation = "left-up";
+ 		power-supply = <&vcc_3v3>;
+                 port {
+                         panel_out1: endpoint {
+@@ -1231,4 +1232,3 @@ reserved-data@600000 {
+                 };
+         };
+ };
+-
+diff --git i/drivers/gpu/drm/panel/panel-starfive-jadard.c w/drivers/gpu/drm/panel/panel-starfive-jadard.c
+index 55d7744dd..91faf9c31 100644
+--- i/drivers/gpu/drm/panel/panel-starfive-jadard.c
++++ w/drivers/gpu/drm/panel/panel-starfive-jadard.c
+@@ -90,6 +90,7 @@ struct jadard {
+ 	struct gpio_desc *blen;
+ 	bool enable_initialized;
+ 	int choosemode;
++	enum drm_panel_orientation orientation;
+ };
+ 
+ static inline struct jadard *panel_to_jadard(struct drm_panel *panel)
+@@ -97,7 +98,7 @@ static inline struct jadard *panel_to_jadard(struct drm_panel *panel)
+ 	return container_of(panel, struct jadard, panel);
+ }
+ 
+-static int jadard_i2c_write(struct i2c_client *client, u8 reg, u8 val)
++static int __maybe_unused jadard_i2c_write(struct i2c_client *client, u8 reg, u8 val)
+ {
+ 	struct i2c_msg msg;
+ 	u8 buf[2];
+@@ -117,7 +118,7 @@ static int jadard_i2c_write(struct i2c_client *client, u8 reg, u8 val)
+ 	return ret;
+ }
+ 
+-static int jadard_i2c_read(struct i2c_client *client, u8 reg, u8 *val)
++static int __maybe_unused jadard_i2c_read(struct i2c_client *client, u8 reg, u8 *val)
+ {
+ 	struct i2c_msg msg[2];
+ 	u8 buf[2];
+@@ -215,12 +216,7 @@ static int jadard_disable(struct drm_panel *panel)
+ 
+ static int jadard_prepare(struct drm_panel *panel)
+ {
+-	struct device *dev = panel->dev;
+ 	struct jadard *jadard = panel_to_jadard(panel);
+-	const struct jadard_panel_desc *desc = jadard->desc;
+-	struct mipi_dsi_device *dsi = jadard->dsi;
+-	unsigned int i;
+-	int err;
+ 
+ 	if (jadard->enable_initialized == true)
+ 		return 0;
+@@ -270,10 +266,18 @@ static int jadard_get_modes(struct drm_panel *panel,
+ 
+ 	connector->display_info.width_mm = mode->width_mm;
+ 	connector->display_info.height_mm = mode->height_mm;
++	drm_connector_set_panel_orientation(connector, jadard->orientation);
+ 
+ 	return 1;
+ }
+ 
++static enum drm_panel_orientation jadard_get_orientation(struct drm_panel *panel)
++{
++	struct jadard *jadard = panel_to_jadard(panel);
++
++	return jadard->orientation;
++}
++
+ static int seiko_panel_get_timings(struct drm_panel *panel,
+ 					unsigned int num_timings,
+ 					struct display_timing *timings)
+@@ -297,6 +301,7 @@ static const struct drm_panel_funcs jadard_funcs = {
+ 	.prepare = jadard_prepare,
+ 	.enable = jadard_enable,
+ 	.get_modes = jadard_get_modes,
++	.get_orientation = jadard_get_orientation,
+ 	.get_timings = seiko_panel_get_timings,
+ };
+ 
+@@ -413,7 +418,6 @@ static const struct jadard_panel_desc cz101b4001_desc[] = {
+ 
+ static int panel_probe(struct i2c_client *client)//, const struct i2c_device_id *id
+ {
+-	u8 reg_value = 0;
+ 	struct jadard *jd_panel;
+ 	const struct jadard_panel_desc *desc;
+ 
+@@ -424,7 +428,7 @@ static int panel_probe(struct i2c_client *client)//, const struct i2c_device_id
+ 	const struct st_sensor_settings *settings;
+ 	struct st_sensor_data *adata;
+ 	struct iio_dev *indio_dev;
+-	int err; u8 mode = 1; int ret = 0;
++	int ret = 0;
+ 
+ 
+ 	struct mipi_dsi_device_info info = {
+@@ -450,6 +454,10 @@ static int panel_probe(struct i2c_client *client)//, const struct i2c_device_id
+ 
+ 	jd_panel->enable_initialized = false;
+ 
++	ret = of_drm_get_panel_orientation(dev->of_node, &jd_panel->orientation);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get panel orientation\n");
++
+ 	jd_panel->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+ 	if (IS_ERR(jd_panel->reset)) {
+ 		DRM_DEV_ERROR(dev, "failed to get our reset GPIO\n");
+@@ -540,14 +548,6 @@ static int panel_probe(struct i2c_client *client)//, const struct i2c_device_id
+ error:
+ 	of_node_put(endpoint);
+ 	return -ENODEV;
+-no_panel:
+-	mipi_dsi_device_unregister(jd_panel->dsi);
+-	//drm_panel_remove(&jd_panel->panel);
+-	//mipi_dsi_detach(jd_panel->dsi);
+-
+-	return -ENODEV;
+-
+-
+ }
+ 
+ static void panel_remove(struct i2c_client *client)
+@@ -582,9 +582,6 @@ static struct i2c_driver panel_driver = {
+ 
+ static int jadard_dsi_probe(struct mipi_dsi_device *dsi)
+ {
+-	struct device *dev = &dsi->dev;
+-	struct jadard *jadard = mipi_dsi_get_drvdata(dsi);
+-
+ 	int ret;
+ 
+ 	dsi->mode_flags = MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE | MIPI_DSI_CLOCK_NON_CONTINUOUS;
+@@ -647,4 +644,3 @@ MODULE_AUTHOR("Jagan Teki <jagan@edgeble.ai>");
+ MODULE_AUTHOR("Stephen Chen <stephen@radxa.com>");
+ MODULE_DESCRIPTION("Jadard JD9365DA-H3 WUXGA DSI panel");
+ MODULE_LICENSE("GPL");
+-
+diff --git i/drivers/media/i2c/gc02m2.c w/drivers/media/i2c/gc02m2.c
+index ce5c7901a..85971a535 100644
+--- i/drivers/media/i2c/gc02m2.c
++++ w/drivers/media/i2c/gc02m2.c
+@@ -1141,7 +1141,6 @@ static int gc02m2_probe(struct i2c_client *client)
+ 	struct device *dev = &client->dev;
+ 	struct gc02m2 *gc02m2;
+ 	struct v4l2_subdev *sd;
+-	char module_facing[6];
+ 	char facing[2];
+ 	int ret;
+ 
+diff --git i/drivers/media/platform/starfive/v4l2_driver/stf_vin.c w/drivers/media/platform/starfive/v4l2_driver/stf_vin.c
+index 9cd0a5dc0..608b342a9 100644
+--- i/drivers/media/platform/starfive/v4l2_driver/stf_vin.c
++++ w/drivers/media/platform/starfive/v4l2_driver/stf_vin.c
+@@ -160,7 +160,7 @@ enum isp_pad_id stf_vin_map_isp_pad(enum vin_line_id line, enum isp_pad_id def)
+ 	if (line == VIN_LINE_WR)
+ 		pad_id = STF_ISP_PAD_SINK;
+ 	else if ((line > VIN_LINE_WR) && (line < VIN_LINE_MAX))
+-		pad_id = stf_vin_map_isp_line(line);
++		pad_id = (enum isp_pad_id)stf_vin_map_isp_line(line);
+ 	else
+ 		pad_id = def;
+ 
+diff --git i/drivers/media/platform/starfive/v4l2_driver/stfcamss.c w/drivers/media/platform/starfive/v4l2_driver/stfcamss.c
+index c4eec1481..27ae350f3 100644
+--- i/drivers/media/platform/starfive/v4l2_driver/stfcamss.c
++++ w/drivers/media/platform/starfive/v4l2_driver/stfcamss.c
+@@ -597,7 +597,7 @@ static int stfcamss_register_mediadevice_subdevnodes(
+ 
+ 		ret = media_create_pad_link(sensor, i,
+ 			input, STF_PAD_SINK,
+-			NULL);
++			0);
+ 		if (ret < 0) {
+ 			st_err(ST_CAMSS,
+ 				"Failed to link %s->%s entities: %d\n",
+diff --git i/drivers/net/wireless/eswin/ecrnx_msg_rx.c w/drivers/net/wireless/eswin/ecrnx_msg_rx.c
+index eab96aa57..250c0b185 100644
+--- i/drivers/net/wireless/eswin/ecrnx_msg_rx.c
++++ w/drivers/net/wireless/eswin/ecrnx_msg_rx.c
+@@ -409,7 +409,7 @@ static inline int ecrnx_rx_remain_on_channel_exp_ind(struct ecrnx_hw *ecrnx_hw,
+     if (ecrnx_hw->roc_cookie == 0)
+         ecrnx_hw->roc_cookie = 1;
+ 
+-#if CONFIG_ECRNX_P2P
++#ifdef CONFIG_ECRNX_P2P
+ 	ecrnx_hw->p2p_listen.listen_started = 0;
+ #endif
+ 
+@@ -1579,7 +1579,7 @@ static msg_cb_fct *msg_hdlrs[] = {
+ void ecrnx_rx_handle_msg(struct ecrnx_hw *ecrnx_hw, struct ipc_e2a_msg *msg)
+ {
+ 
+-    if(!ecrnx_hw || !msg || !(&ecrnx_hw->cmd_mgr))
++    if(!ecrnx_hw || !msg)
+     {
+         ECRNX_ERR("ecrnx_rx_handle_msg:receive msg info error \n");
+         return;
+diff --git i/drivers/net/wireless/eswin/fullmac/ecrnx_amt.c w/drivers/net/wireless/eswin/fullmac/ecrnx_amt.c
+index 5aa4384f9..69740b5be 100644
+--- i/drivers/net/wireless/eswin/fullmac/ecrnx_amt.c
++++ w/drivers/net/wireless/eswin/fullmac/ecrnx_amt.c
+@@ -89,7 +89,7 @@ int ecrnx_amt_init(void)
+ 	ndev->wireless_handlers = &ecrnx_wext_private_handler;
+ #endif
+ 	/* clear the mac address */
+-	memset(ndev->dev_addr, 0, ETH_ALEN);
++	eth_hw_addr_set(ndev, (const u8[ETH_ALEN]){ 0 });
+ 
+ 	if (register_netdev(ndev) != 0)
+         goto err_dev;
+@@ -119,4 +119,3 @@ void ecrnx_amt_deinit(void)
+ 
+  
+ 
+-
+diff --git i/drivers/net/wireless/eswin/fullmac/ecrnx_main.c w/drivers/net/wireless/eswin/fullmac/ecrnx_main.c
+index dcb8d9d3b..e988f6050 100644
+--- i/drivers/net/wireless/eswin/fullmac/ecrnx_main.c
++++ w/drivers/net/wireless/eswin/fullmac/ecrnx_main.c
+@@ -1186,7 +1186,7 @@ static struct wireless_dev *ecrnx_interface_add(struct ecrnx_hw *ecrnx_hw,
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+     if (type == NL80211_IFTYPE_AP_VLAN)
+-        memcpy(ndev->dev_addr, params->macaddr, ETH_ALEN);
++        eth_hw_addr_set(ndev, params->macaddr);
+     else 
+ #endif
+     {
+@@ -1347,7 +1347,7 @@ static int ecrnx_cfg80211_change_iface(struct wiphy *wiphy,
+     {
+         if((ECRNX_VIF_TYPE(vif) == NL80211_IFTYPE_AP) || (ECRNX_VIF_TYPE(vif) == NL80211_IFTYPE_P2P_GO))
+         {
+-            ecrnx_cfg80211_stop_ap(wiphy, dev, NULL);
++            ecrnx_cfg80211_stop_ap(wiphy, dev, -1);
+         }
+         else if((ECRNX_VIF_TYPE(vif) == NL80211_IFTYPE_STATION) || (ECRNX_VIF_TYPE(vif) == NL80211_IFTYPE_P2P_CLIENT))
+         {
+@@ -1712,7 +1712,7 @@ static int ecrnx_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev,
+         key_params.key_len = sme->key_len;
+         key_params.seq_len = 0;
+         key_params.cipher = sme->crypto.cipher_group;
+-        ecrnx_cfg80211_add_key(wiphy, dev, NULL, sme->key_idx, false, NULL, &key_params);
++        ecrnx_cfg80211_add_key(wiphy, dev, -1, sme->key_idx, false, NULL, &key_params);
+     }
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
+     else if ((sme->auth_type == NL80211_AUTHTYPE_SAE) &&
+@@ -1868,7 +1868,7 @@ static int ecrnx_cfg80211_add_station(struct wiphy *wiphy, struct net_device *de
+                 struct station_info sinfo;
+                 u8 ie_offset;
+ 
+-                if((!is_multicast_sta(sta->sta_idx)) && (sta->mac_addr)) {
++                if (!is_multicast_sta(sta->sta_idx)) {
+                     memset(&sinfo, 0, sizeof(sinfo));
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 0, 0)
+@@ -3200,7 +3200,7 @@ static int ecrnx_cfg80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev,
+             ECRNX_ERR("%s: only one TDLS link is supported!\n", __func__);
+             status_code = WLAN_STATUS_REQUEST_DECLINED;
+         }
+-        /* fall-through */
++        fallthrough;
+     case WLAN_TDLS_SETUP_REQUEST:
+     case WLAN_TDLS_TEARDOWN:
+     case WLAN_TDLS_DISCOVERY_REQUEST:
+diff --git i/drivers/net/wireless/eswin/fullmac/ecrnx_tx.h w/drivers/net/wireless/eswin/fullmac/ecrnx_tx.h
+index 03d117711..75deacb41 100644
+--- i/drivers/net/wireless/eswin/fullmac/ecrnx_tx.h
++++ w/drivers/net/wireless/eswin/fullmac/ecrnx_tx.h
+@@ -240,7 +240,7 @@ struct ecrnx_txhdr {
+  */
+ 
+ u16 ecrnx_select_txq(struct ecrnx_vif *ecrnx_vif, struct sk_buff *skb);
+-int ecrnx_start_xmit(struct sk_buff *skb, struct net_device *dev);
++netdev_tx_t ecrnx_start_xmit(struct sk_buff *skb, struct net_device *dev);
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0))
+ int ecrnx_start_mgmt_xmit(struct ecrnx_vif *vif, struct ecrnx_sta *sta,
+diff --git i/drivers/phy/m31/phy-m31-dphy-tx0.c w/drivers/phy/m31/phy-m31-dphy-tx0.c
+index 63e3271b6..56f41e304 100644
+--- i/drivers/phy/m31/phy-m31-dphy-tx0.c
++++ w/drivers/phy/m31/phy-m31-dphy-tx0.c
+@@ -226,7 +226,7 @@ static int sys_m31_dphy_tx_configure(struct phy *phy, union phy_configure_opts *
+ 	dphy = phy_get_drvdata(phy);	
+ 
+ 	bitrate = opts->mipi_dphy.hs_clk_rate;//1188M 60fps
+-	dev_info(dphy->dev, "%s bitrate = %ld\n", __func__, bitrate);
++	dev_info(dphy->dev, "%s bitrate = %u\n", __func__, bitrate);
+ 
+ 	sf_dphy_set_reg(dphy->topsys + 0x8, 0x10, 
+ 					RG_CDTX_L0N_HSTX_RES_SHIFT, RG_CDTX_L0N_HSTX_RES_MASK);
+diff --git i/drivers/power/supply/sc8989x_charger.c w/drivers/power/supply/sc8989x_charger.c
+index 42ed9c794..19d7da771 100755
+--- i/drivers/power/supply/sc8989x_charger.c
++++ w/drivers/power/supply/sc8989x_charger.c
+@@ -884,6 +884,7 @@ static int sc89890h_charge_status(struct sc89890h *sc)
+         return POWER_SUPPLY_CHARGE_TYPE_FAST;
+     case SC89890H_CHRG_STAT_CHGDONE:
+         printk("Charge Termination \n");
++        fallthrough;
+     default:
+         return POWER_SUPPLY_CHARGE_TYPE_UNKNOWN;
+     }
+@@ -933,7 +934,7 @@ static int sc89890h_usb_get_property(struct power_supply *psy,
+ }
+ 
+ 
+-static int sc89890h_wall_get_property(struct power_supply *psy,
++static int __maybe_unused sc89890h_wall_get_property(struct power_supply *psy,
+                 enum power_supply_property psp,
+                 union power_supply_propval *val)
+ {
+@@ -1035,7 +1036,7 @@ static void sc89890h_create_device_node(struct device *dev)
+ 
+ static int sc89890h_parse_dt(struct device *dev, struct sc89890h *sc)
+ {
+-    int ret, value;
++    int ret;
+     struct device_node *np = dev->of_node;
+ 
+     ret = of_property_read_u32(np, 
+diff --git i/drivers/staging/rtl8852bu/core/rtw_ap.c w/drivers/staging/rtl8852bu/core/rtw_ap.c
+index 0198053df..8f810ad91 100755
+--- i/drivers/staging/rtl8852bu/core/rtw_ap.c
++++ w/drivers/staging/rtl8852bu/core/rtw_ap.c
+@@ -7295,6 +7295,8 @@ static struct rtw_add_del_sta_obj *rtw_ap_get_stainfo_by_add_sta_list(struct _AD
+ 	return add_del_sta_obj;
+ }
+ 
++static enum phl_mdl_ret_code phl_status_to_mdl_ret(enum rtw_phl_status status);
++
+ static enum phl_mdl_ret_code _ap_add_del_sta_req_acquired(void *dispr, void *priv)
+ {
+ 	struct _ADAPTER *padapter = (struct _ADAPTER *)priv;
+@@ -7324,13 +7326,13 @@ static enum phl_mdl_ret_code _ap_add_del_sta_req_acquired(void *dispr, void *pri
+ 	if (!add_del_sta_obj) {
+ 		RTW_ERR(FUNC_ADPT_FMT": add_del_sta_obj is null\n",
+ 			FUNC_ADPT_ARG(padapter));
+-			return status;
++			return phl_status_to_mdl_ret(status);
+ 	}
+ 
+ 	psta = add_del_sta_obj->sta;
+ 	if (!psta) {
+ 		RTW_ERR(FUNC_ADPT_FMT": psta is null\n", FUNC_ADPT_ARG(padapter));
+-		return status;
++		return phl_status_to_mdl_ret(status);
+ 	}
+ 
+ 	RTW_INFO(FUNC_ADPT_FMT ": %s STA\n",
+@@ -7347,7 +7349,7 @@ static enum phl_mdl_ret_code _ap_add_del_sta_req_acquired(void *dispr, void *pri
+ 
+ 	RTW_DBG(FUNC_ADPT_FMT ": -\n", FUNC_ADPT_ARG(padapter));
+ 
+-	return status;
++	return phl_status_to_mdl_ret(status);
+ 
+ }
+ 
+@@ -7360,6 +7362,21 @@ static enum phl_mdl_ret_code _ap_add_del_sta_req_abort(void *dispr, void *priv)
+ 	return MDL_RET_SUCCESS;
+ }
+ 
++static enum phl_mdl_ret_code phl_status_to_mdl_ret(enum rtw_phl_status status)
++{
++	switch (status) {
++	case RTW_PHL_STATUS_SUCCESS:
++		return MDL_RET_SUCCESS;
++	case RTW_PHL_STATUS_PENDING:
++		return MDL_RET_PENDING;
++	case RTW_PHL_STATUS_CANNOT_IO:
++	case RTW_PHL_STATUS_CMD_CANNOT_IO:
++		return MDL_RET_CANNOT_IO;
++	default:
++		return MDL_RET_FAIL;
++	}
++}
++
+ static enum phl_mdl_ret_code _ap_add_del_sta_req_ev_hdlr(void *dispr, void *priv, struct phl_msg* msg)
+ {
+ 	struct _ADAPTER *padapter = (struct _ADAPTER *)priv;
+@@ -7550,7 +7567,7 @@ static enum phl_mdl_ret_code _ap_add_del_sta_req_ev_hdlr(void *dispr, void *priv
+ 
+ 	_ap_add_del_sta_cmd_done(padapter); /* free token */
+ 	_rtw_spinunlock_bh(&padapter->ap_add_del_sta_lock);
+-	return status;
++	return phl_status_to_mdl_ret(status);
+ }
+ 
+ static enum phl_mdl_ret_code _ap_add_del_sta_req_set_info(void *dispr, void *priv, struct phl_module_op_info* info)
+diff --git i/drivers/staging/rtl8852bu/core/rtw_chplan.c w/drivers/staging/rtl8852bu/core/rtw_chplan.c
+index 9424a9f7b..9ad442338 100644
+--- i/drivers/staging/rtl8852bu/core/rtw_chplan.c
++++ w/drivers/staging/rtl8852bu/core/rtw_chplan.c
+@@ -611,10 +611,10 @@ char *rtw_get_edcca_mode_of_bands_str(char *buf, u8 mode_of_band[])
+ static enum rtw_edcca_mode rtw_edcca_mode_get_strictest(enum rtw_edcca_mode_t a, enum rtw_edcca_mode_t b)
+ {
+ 	if (a >= RTW_EDCCA_MODE_NUM)
+-		return b < RTW_EDCCA_MODE_NUM ? b : RTW_EDCCA_MODE_NUM;
++		return (enum rtw_edcca_mode)(b < RTW_EDCCA_MODE_NUM ? b : RTW_EDCCA_MODE_NUM);
+ 	if (b >= RTW_EDCCA_MODE_NUM)
+-		return a < RTW_EDCCA_MODE_NUM ? a : RTW_EDCCA_MODE_NUM;
+-	return rtw_max(a,b);
++		return (enum rtw_edcca_mode)(a < RTW_EDCCA_MODE_NUM ? a : RTW_EDCCA_MODE_NUM);
++	return (enum rtw_edcca_mode)rtw_max(a, b);
+ }
+ 
+ static void rtw_edcca_mode_update_by_regd_reqs(struct dvobj_priv *dvobj, bool req_lock)
+diff --git i/drivers/staging/rtl8852bu/core/rtw_sta_mgt.c w/drivers/staging/rtl8852bu/core/rtw_sta_mgt.c
+index 800ceffa9..886c2df56 100755
+--- i/drivers/staging/rtl8852bu/core/rtw_sta_mgt.c
++++ w/drivers/staging/rtl8852bu/core/rtw_sta_mgt.c
+@@ -395,8 +395,7 @@ void rtw_mfree_stainfo(struct sta_info *psta);
+ void rtw_mfree_stainfo(struct sta_info *psta)
+ {
+ 
+-	if (&psta->lock != NULL)
+-		_rtw_spinlock_free(&psta->lock);
++	_rtw_spinlock_free(&psta->lock);
+ 
+ 	_rtw_free_sta_xmit_priv_lock(&psta->sta_xmitpriv);
+ 	_rtw_free_sta_recv_priv_lock(&psta->sta_recvpriv);
+@@ -1721,4 +1720,3 @@ void dump_pre_link_sta_ctl(void *sel, struct sta_priv *stapriv)
+ 	}
+ }
+ #endif /* CONFIG_RTW_PRE_LINK_STA */
+-
+diff --git i/drivers/staging/rtl8852bu/core/rtw_vht.c w/drivers/staging/rtl8852bu/core/rtw_vht.c
+index 8389238be..745f90e38 100755
+--- i/drivers/staging/rtl8852bu/core/rtw_vht.c
++++ w/drivers/staging/rtl8852bu/core/rtw_vht.c
+@@ -1655,17 +1655,15 @@ void rtw_reattach_vht_ies(_adapter *padapter, struct _ADAPTER_LINK *padapter_lin
+ 
+ 	RTW_INFO(FUNC_ADPT_FMT"\n", FUNC_ADPT_ARG(padapter));
+ 
+-	if (pnetwork->IEs != NULL) {
+-		vht_op_ie = rtw_set_ie(vht_cap_ie, EID_VHTCapability, VHT_CAP_IE_LEN,
+-			pvhtpriv->vht_cap_ie_backup, &(pnetwork->IELength));
++	vht_op_ie = rtw_set_ie(vht_cap_ie, EID_VHTCapability, VHT_CAP_IE_LEN,
++		pvhtpriv->vht_cap_ie_backup, &(pnetwork->IELength));
+ 
+-		rtw_set_ie(vht_op_ie, EID_VHTOperation, VHT_OP_IE_LEN,
+-			pvhtpriv->vht_op_ie_backup, &(pnetwork->IELength));
++	rtw_set_ie(vht_op_ie, EID_VHTOperation, VHT_OP_IE_LEN,
++		pvhtpriv->vht_op_ie_backup, &(pnetwork->IELength));
+ 
+-		rtw_add_ext_cap_info(pmlmepriv->ext_capab_ie_data, &(pmlmepriv->ext_capab_ie_len), OP_MODE_NOTIFICATION);
+-		rtw_update_ext_cap_ie(pmlmepriv->ext_capab_ie_data, pmlmepriv->ext_capab_ie_len, pnetwork->IEs \
+-		, &(pnetwork->IELength), _BEACON_IE_OFFSET_);
+-	}
++	rtw_add_ext_cap_info(pmlmepriv->ext_capab_ie_data, &(pmlmepriv->ext_capab_ie_len), OP_MODE_NOTIFICATION);
++	rtw_update_ext_cap_ie(pmlmepriv->ext_capab_ie_data, pmlmepriv->ext_capab_ie_len, pnetwork->IEs \
++	, &(pnetwork->IELength), _BEACON_IE_OFFSET_);
+ 
+ 	pmlmepriv->vhtpriv.vht_option = _TRUE;
+ }
+diff --git i/drivers/staging/rtl8852bu/include/osdep_service.h w/drivers/staging/rtl8852bu/include/osdep_service.h
+index 5a7975b5a..a78d3fb69 100644
+--- i/drivers/staging/rtl8852bu/include/osdep_service.h
++++ w/drivers/staging/rtl8852bu/include/osdep_service.h
+@@ -142,10 +142,10 @@ void rtw_mstat_dump(void *sel);
+ bool match_mstat_sniff_rules(const enum mstat_f flags, const size_t size);
+ void *dbg_rtw_vmalloc(u32 sz, const enum mstat_f flags, const char *func, const int line);
+ void *dbg_rtw_zvmalloc(u32 sz, const enum mstat_f flags, const char *func, const int line);
+-void dbg_rtw_vmfree(void *pbuf, const enum mstat_f flags, u32 sz, const char *func, const int line);
++void dbg_rtw_vmfree(void *pbuf, u32 sz, const enum mstat_f flags, const char *func, const int line);
+ void *dbg_rtw_malloc(u32 sz, const enum mstat_f flags, const char *func, const int line);
+ void *dbg_rtw_zmalloc(u32 sz, const enum mstat_f flags, const char *func, const int line);
+-void dbg_rtw_mfree(void *pbuf, const enum mstat_f flags, u32 sz, const char *func, const int line);
++void dbg_rtw_mfree(void *pbuf, u32 sz, const enum mstat_f flags, const char *func, const int line);
+ 
+ struct sk_buff *dbg_rtw_skb_alloc(unsigned int size, const enum mstat_f flags, const char *func, const int line);
+ void dbg_rtw_skb_free(struct sk_buff *skb, const enum mstat_f flags, const char *func, const int line);
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/btc/halbtc_dbg_cmd.c w/drivers/staging/rtl8852bu/phl/hal_g6/btc/halbtc_dbg_cmd.c
+index cba83bcc5..e808e2d15 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/btc/halbtc_dbg_cmd.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/btc/halbtc_dbg_cmd.c
+@@ -3774,7 +3774,7 @@ void halbtc_cmd_parser(struct btc_t *btc, char input[][MAX_ARGV],
+ 		BTC_CNSL(out_len, used, output + used, out_len - used,
+ 			 "command not supported !!\n");
+ 
+-	/* fall through */
++		fallthrough;
+ 	case HALBTC_HELP:
+ 		BTC_CNSL(out_len, used, output + used, out_len - used,
+ 			 "BTC cmd ==>\n");
+@@ -3813,4 +3813,3 @@ s32 halbtc_cmd(struct btc_t *btc, char *input, char *output, u32 out_len)
+ }
+ 
+ #endif
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/hal_api_mac.c w/drivers/staging/rtl8852bu/phl/hal_g6/hal_api_mac.c
+index 59dbdff5f..954c727d6 100755
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/hal_api_mac.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/hal_api_mac.c
+@@ -520,7 +520,7 @@ rtw_hal_mac_dbcc_hci_ctrl(struct hal_info_t *hal_info, enum phl_band_idx band_id
+ 	struct mac_ax_dbcc_hci_ctrl info = {0};
+ 	u32 ret = 0;
+ 
+-	info.band = band_idx;
++	info.band = (enum mac_ax_band)band_idx;
+ 	info.pause = pause; /*1: flush mode enabled, 0: flush mode disabled */
+ 	//info.u.usb_ctrl.rsvd;
+ 
+@@ -3100,7 +3100,7 @@ rtw_hal_mac_lv1_rcvy(struct hal_info_t *hal_info, enum rtw_phl_ser_lv1_recv_step
+ 	u32 mac_err = 0;
+ 	struct mac_ax_adapter *mac = hal_to_mac(hal_info);
+ 
+-	mac_err = mac->ops->lv1_rcvy(mac, step);
++	mac_err = mac->ops->lv1_rcvy(mac, (enum mac_ax_lv1_rcvy_step)step);
+ 	if (mac_err != MACSUCCESS) {
+ 		PHL_ERR("%s : mac status %d.\n", __func__, mac_err);
+ 		return RTW_HAL_STATUS_FAILURE;
+@@ -6925,9 +6925,9 @@ rtw_hal_mac_lps_cfg(struct hal_info_t *hal_info,
+ 		ax_ps_mode = MAC_AX_PS_MODE_ACTIVE;
+ 	}
+ 
+-	ax_lps_info.listen_bcn_mode = lps_info->listen_bcn_mode;
++	ax_lps_info.listen_bcn_mode = (enum mac_ax_listern_bcn_mode)lps_info->listen_bcn_mode;
+ 	ax_lps_info.awake_interval = lps_info->awake_interval;
+-	ax_lps_info.smart_ps_mode = lps_info->smart_ps_mode;
++	ax_lps_info.smart_ps_mode = (enum mac_ax_smart_ps_mode)lps_info->smart_ps_mode;
+ 	ax_lps_info.bcnnohit_en = lps_info->bcnnohit_en;
+ 
+ 	if (mac->ops->cfg_lps(mac, (u8)lps_info->macid, ax_ps_mode,
+@@ -11015,4 +11015,3 @@ rtw_hal_mac_set_usr_edca(struct hal_info_t *hal_info,
+ 
+ 	return RTW_HAL_STATUS_SUCCESS;
+ }
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.c w/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.c
+index cac990ca4..bd0bfb444 100755
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.c
+@@ -399,7 +399,7 @@ u32 h2c_agg_enqueue(struct mac_ax_adapter *adapter, struct h2c_buf *h2cb)
+ 
+ #if MAC_AX_PHL_H2C
+ struct rtw_h2c_pkt *h2cb_alloc(struct mac_ax_adapter *adapter,
+-			       enum rtw_h2c_pkt_type buf_class)
++			       enum h2c_buf_class buf_class)
+ {
+ 	struct rtw_h2c_pkt *h2cb;
+ #if MAC_AX_H2C_LMT_EN
+@@ -408,7 +408,7 @@ struct rtw_h2c_pkt *h2cb_alloc(struct mac_ax_adapter *adapter,
+ 	u8 cnt = 100;
+ #endif
+ 
+-	if (buf_class >= H2CB_TYPE_MAX) {
++	if (buf_class >= H2CB_CLASS_MAX) {
+ 		PLTFM_MSG_ERR("[ERR]unknown class\n");
+ 		return NULL;
+ 	}
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.h w/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.h
+index 705a8f209..8280519cb 100755
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.h
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/mac/mac_ax/fwcmd.h
+@@ -285,7 +285,7 @@ u32 h2cb_exit(struct mac_ax_adapter *adapter);
+  */
+ #if MAC_AX_PHL_H2C
+ struct rtw_h2c_pkt *h2cb_alloc(struct mac_ax_adapter *adapter,
+-			       enum rtw_h2c_pkt_type buf_class);
++			       enum h2c_buf_class buf_class);
+ /**
+  * @}
+  * @}
+@@ -847,4 +847,3 @@ u32 mac_get_c2h_event(struct mac_ax_adapter *adapter,
+ u32 mac_notify_fw_dbcc(struct mac_ax_adapter *adapter, u8 en);
+ 
+ #endif
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb.c
+index 356828fa5..cb0a340a8 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb.c
+@@ -43,7 +43,7 @@ void halbb_supportability_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	u8 i;
+ 
+ 	for (i = 0; i < 5; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_dbg_cmd.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_dbg_cmd.c
+index 618c02502..d647e83d5 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_dbg_cmd.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_dbg_cmd.c
+@@ -281,7 +281,7 @@ void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	u8 i = 0;
+ 
+ 	for (i = 0; i < 5; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 	comp = bb->dbg_component;
+@@ -953,7 +953,7 @@ void halbb_fw_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 		goto out;
+ 	}
+ 	for (i = 0; i < 5; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 	if (val[0] == 1) {
+@@ -978,4 +978,3 @@ void halbb_fw_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	*_used = used;
+ 	*_out_len = out_len;
+ } 
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_env_mntr.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_env_mntr.c
+index 797012abe..536bdb301 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_env_mntr.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_env_mntr.c
+@@ -1225,7 +1225,7 @@ void halbb_nhm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 				    "NHM is controlled by FW!\n");
+ 		}
+ 		for (i = 1; i < 9; i++) {
+-			if (input[i + 1])
++			if (input[i + 1][0] != '\0')
+ 				HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &var[i]);
+ 		}
+ 
+@@ -1451,7 +1451,7 @@ void halbb_clm_init(struct bb_info *bb)
+ 	if (bb->ic_type & BB_IC_AX_SERIES)
+ 		env->clm_input_opt = CLM_CCA_INIT;
+ 	else
+-		env->clm_input_opt = BE_CLM_CCA_INIT;
++		env->clm_input_opt = (enum clm_opt_input)BE_CLM_CCA_INIT;
+ 
+ 	if ((bb->ic_type != BB_RTL8852A) && (bb->ic_type != BB_RTL8852B) &&
+ 	    (bb->ic_type != BB_RTL8851B)) {
+@@ -1484,7 +1484,7 @@ void halbb_clm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	u8 i = 0;
+ 
+ 	for (i = 0; i < 7; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &var[i]);
+ 	}
+ 
+@@ -1548,7 +1548,7 @@ void halbb_clm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 			if (bb->ic_type & BB_IC_AX_SERIES)
+ 				para.clm_input_opt = CLM_CCA_S80_S40_S20;
+ 			else
+-				para.clm_input_opt = BE_CLM_CCA_S160_S80_S40_S20;
++				para.clm_input_opt = (enum clm_opt_input)BE_CLM_CCA_S160_S80_S40_S20;
+ 
+ 			if ((bb->ic_type != BB_RTL8852A) &&
+ 			    (bb->ic_type != BB_RTL8852B) &&
+@@ -1561,7 +1561,7 @@ void halbb_clm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 			if (bb->ic_type & BB_IC_AX_SERIES)
+ 				para.clm_input_opt = (enum clm_opt_input)var[2];
+ 			else
+-				para.clm_input_opt = (enum be_clm_opt_input)var[2];
++				para.clm_input_opt = (enum clm_opt_input)var[2];
+ 
+ 			if ((bb->ic_type != BB_RTL8852A) &&
+ 			    (bb->ic_type != BB_RTL8852B) &&
+@@ -2008,7 +2008,7 @@ void halbb_ifs_clm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 		ifs_clm_num = BE_IFS_CLM_NUM;
+ 
+ 	for (i = 0; i < 5; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &var[i]);
+ 	}
+ 
+@@ -2872,7 +2872,7 @@ void halbb_fahm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 		env->fahm_manual_ctrl = true;
+ 
+ 		for (i = 1; i < 9; i++) {
+-			if (input[i + 1])
++			if (input[i + 1][0] != '\0')
+ 				HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &var[i]);
+ 		}
+ 
+@@ -3035,7 +3035,7 @@ void halbb_edcca_clm_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	u8 i = 0;
+ 
+ 	for (i = 0; i < 5; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &var[i]);
+ 	}
+ 
+@@ -3780,7 +3780,7 @@ void halbb_env_mntr(struct bb_info *bb)
+ 		if (bb->ic_type & BB_IC_AX_SERIES)
+ 			para.clm_input_opt = CLM_CCA_S80_S40_S20;
+ 		else
+-			para.clm_input_opt = BE_CLM_CCA_S160_S80_S40_S20;
++			para.clm_input_opt = (enum clm_opt_input)BE_CLM_CCA_S160_S80_S40_S20;
+ 
+ 		para.nhm_app = NHM_BACKGROUND;
+ 		para.nhm_incld_cca = NHM_EXCLUDE_CCA;
+@@ -4179,7 +4179,7 @@ void halbb_env_mntr_dbg_trigger(struct bb_info *bb, u32 *_used, char *output,
+ 	if (bb->ic_type & BB_IC_AX_SERIES)
+ 		para.clm_input_opt = CLM_CCA_S80_S40_S20;
+ 	else
+-		para.clm_input_opt = BE_CLM_CCA_S160_S80_S40_S20;
++		para.clm_input_opt = (enum clm_opt_input)BE_CLM_CCA_S160_S80_S40_S20;
+ 
+ 	/*nhm para*/
+ 	para.nhm_app = NHM_DBG_11K;
+@@ -4275,7 +4275,7 @@ void halbb_env_mntr_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	u8 func_sel = 0;
+ 
+ 	for (i = 0; i < 3; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &var[i]);
+ 	}
+ 
+@@ -5398,4 +5398,3 @@ void halbb_cr_cfg_env_mntr_init(struct bb_info *bb)
+ 
+ 
+ #endif
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_physts.h w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_physts.h
+index 7702078db..c11bacc89 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_physts.h
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_physts.h
+@@ -768,8 +768,8 @@ void halbb_physts_rpt_gen(struct bb_info *bb, u32 physts_bitmap,
+ 			  struct physts_result *rpt,
+ 			  bool physts_rpt_valid, struct physts_rxd *desc,
+ 			  bool is_cck_rate, bool is_ie8_valid);
+-void halbb_physts_ie_bitmap_set(struct bb_info *bb, u32 ie_page, u32 bitmap);
+-u32 halbb_physts_ie_bitmap_get(struct bb_info *bb, u32 ie_page);
++void halbb_physts_ie_bitmap_set(struct bb_info *bb, enum bb_physts_bitmap_t ie_page, u32 bitmap);
++u32 halbb_physts_ie_bitmap_get(struct bb_info *bb, enum bb_physts_bitmap_t ie_page);
+ void halbb_physts_ie_bitmap_en(struct bb_info *bb, enum bb_physts_bitmap_t type,
+ 			       enum bb_physts_ie_t ie, bool en);
+ void halbb_phy_sts_manual_trig(struct bb_info *bb, enum bb_mode_type mode, u8 ss);
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_psd.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_psd.c
+index fb111ab8d..0ade81a3c 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_psd.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_psd.c
+@@ -419,7 +419,7 @@ void halbb_psd_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 	} else if (var1[0] == 0) {
+ 
+ 		for (i = 1; i <= 10; i++) {
+-			if (input[i + 1])
++			if (input[i + 1][0] != '\0')
+ 				HALBB_SCAN(input[i + 1], DCMD_DECIMAL,
+ 					   &var1[i]);
+ 		}
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_pwr_ctrl.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_pwr_ctrl.c
+index d00044b19..02ce61853 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_pwr_ctrl.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_pwr_ctrl.c
+@@ -188,7 +188,7 @@ void halbb_set_pwr_macid_idx(struct bb_info *bb, u16 macid, s8 pwr, bool pwr_en,
+ 	}
+ 	
+ 	/* phy idx is one to one mapping to mac hw band idx */
+-	hw_band = bb->bb_phy_idx;
++	hw_band = (enum phl_band_idx)bb->bb_phy_idx;
+ 	/* pwr : S(8,1)*/
+ 	ret_v |= rtw_hal_mac_write_msk_pwr_reg(bb->hal_com, hw_band, reg_ofst, mask_pwr, pwr);
+ 	ret_v |= rtw_hal_mac_write_msk_pwr_reg(bb->hal_com, hw_band, reg_ofst, mask_en, pwr_en);
+@@ -497,7 +497,7 @@ void halbb_pwr_ctrl_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 		return;
+ 	}
+ 	for (i = 0; i < 8; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 	switch (val[0]) {
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_ra.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_ra.c
+index 78676aabb..aaec75c40 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_ra.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_ra.c
+@@ -568,7 +568,7 @@ bool halbb_set_csi_rate(struct bb_info *bb, struct rtw_phl_stainfo_t *phl_sta_i)
+ 	ra_cfg->cr_tbl_sel = bb->hal_com->csi_para_ctrl_sel;
+ 	ra_cfg->band_num = phl_sta_i->rlink->hw_band;
+ 	ra_cfg->fixed_csi_rate_l = halbb_ss_mcs_2_mcs_ss_idx(bb,
+-							     ra_sta_i->csi_rate.mode,
++							     (enum bb_mode_type)ra_sta_i->csi_rate.mode,
+ 							     ra_sta_i->csi_rate.ss,
+ 							     ra_sta_i->csi_rate.mcs_idx);
+ 
+@@ -2704,7 +2704,7 @@ void halbb_ra_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 		goto out;
+ 	}
+ 	for (i = 0; i < 8; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 	//rssi_len = sizeof(struct bb_h2c_rssi_setting);
+@@ -2923,4 +2923,3 @@ void halbb_ra_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 
+ #endif
+ 
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_rua_tbl.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_rua_tbl.c
+index e0783ab96..9d9ae27af 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_rua_tbl.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/bb/halbb_rua_tbl.c
+@@ -1270,12 +1270,12 @@ u32 halbb_ch_bw_upd(struct bb_info *bb, struct rtw_ch_bw_notif *cfg){
+ 		txsc_80 = halbb_get_txsc(bb, pri_ch,
+ 						 central_ch, cbw,
+ 						 CHANNEL_WIDTH_80);
+-		/* fall through */
++		fallthrough;
+ 	case CHANNEL_WIDTH_80:
+ 		txsc_40 = halbb_get_txsc(bb, pri_ch,
+ 						 central_ch, cbw,
+ 						 CHANNEL_WIDTH_40);
+-		/* fall through */
++		fallthrough;
+ 	case CHANNEL_WIDTH_40:
+ 		txsc_20 = halbb_get_txsc(bb, pri_ch,
+ 						 central_ch, cbw,
+@@ -2772,7 +2772,7 @@ void halbb_rua_tbl_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+ 		goto out;
+ 	}
+ 	for (i = 0; i < 8; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALBB_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 	if (val[0] < 6)
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_dbg.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_dbg.c
+index 7365ffdeb..d8967e4e3 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_dbg.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_dbg.c
+@@ -86,7 +86,7 @@ void halrf_support_ability(struct rf_info *rf, char input[][16], u32 *_used,
+ 	u8 i;
+ 
+ 	for (i = 0; i < 5; i++)
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			_os_sscanf(input[i + 1], "%d", &value[i]);
+ 
+ 	if (value[0] == 100) {
+@@ -204,7 +204,7 @@ void halrf_dbg_trace(struct rf_info *rf, char input[][16], u32 *_used,
+ 	u8 i;
+ 
+ 	for (i = 0; i < 5; i++)
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			_os_sscanf(input[i + 1], "%d", &value[i]);
+ 
+ 	if (value[0] == 100) {
+@@ -1857,7 +1857,7 @@ void halrf_test_cmd(struct rf_info *rf, char input[][16], u32 *_used,
+ 	u8 i;
+ 
+ 	for (i = 0; i < 5; i++) {
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			HALRF_SCAN(input[i + 1], DCMD_DECIMAL, &val[i]);
+ 	}
+ 
+@@ -2165,7 +2165,7 @@ void halrf_hwtx_dbg_cmd(struct rf_info *rf, char input[][16], u32 *_used,
+ 	u8 i;
+ 
+ 	for (i = 0; i < 4; i++)
+-		if (input[i + 1])
++		if (input[i + 1][0] != '\0')
+ 			_os_sscanf(input[i + 1], "%d", &value[i]);
+ 
+ 	if (_os_strcmp(input[1], "-h") == 0) {
+@@ -2586,4 +2586,3 @@ void halrf_rfk_dbg_cmd(struct rf_info *rf, char input[][16], u32 *_used,
+ 				 " No CMD find!!\n");
+ 
+ }
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_interface.c w/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_interface.c
+index 937b271cd..5f2f19c61 100644
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_interface.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/phy/rf/halrf_interface.c
+@@ -237,7 +237,7 @@ void halrf_wrf(struct rf_info *rf, enum rf_path path, u32 addr, u32 mask, u32 va
+ 			cmd.src = RTW_MAC_RF_CMD_OFLD;
+ 			cmd.type = RTW_MAC_WRITE_OFLD;
+ 			cmd.lc = 0;
+-			cmd.rf_path = path;
++			cmd.rf_path = (enum rtw_mac_rf_path)path;
+ 			cmd.offset = (u16)addr;
+ 			cmd.value = val;
+ 			cmd.mask = mask;
+@@ -431,4 +431,3 @@ void halrf_fill_h2c_cmd(struct rf_info *rf, u16 cmdlen, u8 cmdid,
+ 		RF_DBG(rf, DBG_RF_IQK, "Error H2C CLASS=%d, ID=%d\n", classid, cmdid);
+ 	}
+ }
+-
+diff --git i/drivers/staging/rtl8852bu/phl/hal_g6/test/mp/hal_test_mp_efuse.c w/drivers/staging/rtl8852bu/phl/hal_g6/test/mp/hal_test_mp_efuse.c
+index 7c5b9bace..9f49ecded 100755
+--- i/drivers/staging/rtl8852bu/phl/hal_g6/test/mp/hal_test_mp_efuse.c
++++ w/drivers/staging/rtl8852bu/phl/hal_g6/test/mp/hal_test_mp_efuse.c
+@@ -192,7 +192,7 @@ enum rtw_hal_status rtw_hal_mp_efuse_shadow2buf(
+ 	enum rtw_hal_status hal_status = RTW_HAL_STATUS_FAILURE;
+ 
+ 	PHL_INFO("%s\n", __FUNCTION__);
+-	if (arg->poutbuf != NULL && arg->buf_len != 0)
++	if (arg->buf_len != 0)
+ 		hal_status = rtw_hal_efuse_shadow2buf(mp->hal, arg->poutbuf, arg->buf_len);
+ 	else
+ 		PHL_INFO("%s: buf null, buf len = %d\n", __FUNCTION__, arg->buf_len);
+@@ -377,7 +377,7 @@ enum rtw_hal_status rtw_hal_mp_efuse_bt_shadow2buf(
+ 	enum rtw_hal_status hal_status = RTW_HAL_STATUS_FAILURE;
+ 
+ 	PHL_INFO("%s\n", __FUNCTION__);
+-	if (arg->poutbuf != NULL && arg->buf_len != 0)
++	if (arg->buf_len != 0)
+ 		hal_status = rtw_hal_efuse_bt_shadow2buf(mp->hal, arg->poutbuf, arg->buf_len);
+ 	else
+ 		PHL_INFO("%s: buf null, buf len = %d\n", __FUNCTION__, arg->buf_len);
+diff --git i/drivers/staging/rtl8852bu/phl/hci/phl_trx_usb.c w/drivers/staging/rtl8852bu/phl/hci/phl_trx_usb.c
+index 6ed1d5061..1ab457d3a 100755
+--- i/drivers/staging/rtl8852bu/phl/hci/phl_trx_usb.c
++++ w/drivers/staging/rtl8852bu/phl/hci/phl_trx_usb.c
+@@ -562,7 +562,7 @@ enum rtw_phl_status phl_tx_release_buf_usb(void *phl, u8  *tx_buf_ptr)
+ enum rtw_phl_status
+ phl_prepare_tx_usb(struct phl_info_t *phl_info, struct rtw_xmit_req *tx_req)
+ {
+-	return true;
++	return RTW_PHL_STATUS_SUCCESS;
+ }
+ 
+ 
+@@ -2073,4 +2073,3 @@ phl_get_usb_support_ability(struct phl_info_t *phl_info, u32 *ability)
+ 	PHL_INFO("%s (%d) !!\n", __FUNCTION__, *ability);
+ 	return RTW_PHL_STATUS_SUCCESS;
+ }
+-
+diff --git i/drivers/staging/rtl8852bu/phl/phl_cmd_scan.c w/drivers/staging/rtl8852bu/phl/phl_cmd_scan.c
+index 947b0a4d7..fdf36eeac 100644
+--- i/drivers/staging/rtl8852bu/phl/phl_cmd_scan.c
++++ w/drivers/staging/rtl8852bu/phl/phl_cmd_scan.c
+@@ -1497,7 +1497,7 @@ enum rtw_phl_status rtw_phl_cmd_scan_request(void *phl,
+ 	return RTW_PHL_STATUS_SUCCESS;
+ 
+ error:
+-	if(param->sctrl) {
++	if (param->sctrl_num) {
+ 		_cmd_scan_req_deinit(phl_info, param);
+ 		param->sctrl_num = 0;
+ 	}
+diff --git i/drivers/staging/rtl8852bu/phl/phl_ps.c w/drivers/staging/rtl8852bu/phl/phl_ps.c
+index 73fd110ee..3afa70c34 100755
+--- i/drivers/staging/rtl8852bu/phl/phl_ps.c
++++ w/drivers/staging/rtl8852bu/phl/phl_ps.c
+@@ -309,7 +309,7 @@ phl_ps_cfg_pwr_lvl(struct phl_info_t *phl_info, u8 ps_mode, u8 cur_pwr_lvl, u8 r
+ 
+ 	if (cur_pwr_lvl == req_pwr_lvl) {
+ 		PHL_TRACE(COMP_PHL_PS, _PHL_WARNING_, "[PS], %s(): pwr lvl is not change!\n", __func__);
+-		return RTW_HAL_STATUS_SUCCESS;
++		return RTW_PHL_STATUS_SUCCESS;
+ 	}
+ 
+ 	_ps_ntfy_before_pwr_cfg(phl_info, ps_mode, cur_pwr_lvl, req_pwr_lvl);
+@@ -432,7 +432,8 @@ phl_ps_ips_cfg(struct phl_info_t *phl_info, struct ps_cfg *cfg, u8 en)
+ 	ips_info.en = en;
+ 	ips_info.macid = cfg->macid;
+ 
+-	return rtw_hal_ps_ips_cfg(phl_info->hal, &ips_info);
++	return rtw_hal_ps_ips_cfg(phl_info->hal, &ips_info) == RTW_HAL_STATUS_SUCCESS ?
++		       RTW_PHL_STATUS_SUCCESS : RTW_PHL_STATUS_FAILURE;
+ }
+ 
+ enum rtw_phl_status
+diff --git i/drivers/staging/rtl8852bu/phl/phl_sound.c w/drivers/staging/rtl8852bu/phl/phl_sound.c
+index 47ca1e2f7..92f122092 100644
+--- i/drivers/staging/rtl8852bu/phl/phl_sound.c
++++ w/drivers/staging/rtl8852bu/phl/phl_sound.c
+@@ -44,10 +44,6 @@ enum rtw_phl_status phl_snd_init_snd_grp(struct phl_info_t *phl_info)
+ 	struct phl_sound_param *param = &snd->snd_param;
+ 	u8 i = 0;
+ 	do {
+-		if (param->snd_grp == NULL) {
+-			status = RTW_PHL_STATUS_FAILURE;
+-			break;
+-		}
+ 		for (i = 0; i < MAX_SND_GRP_NUM; i++) {
+ 			__reset_snd_grp(&param->snd_grp[i]);
+ 			param->snd_grp[i].gidx = i;
+@@ -1951,4 +1947,4 @@ rtw_phl_sound_abort(void *phl)
+ 	return RTW_PHL_STATUS_SUCCESS;
+ }
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git i/drivers/staging/rtl8852bu/phl/phl_sta.c w/drivers/staging/rtl8852bu/phl/phl_sta.c
+index 4d243ae01..7b22605d7 100644
+--- i/drivers/staging/rtl8852bu/phl/phl_sta.c
++++ w/drivers/staging/rtl8852bu/phl/phl_sta.c
+@@ -4734,7 +4734,9 @@ enum rtw_phl_status
+ phl_cmd_set_seciv_hdl(struct phl_info_t *phl_info, u8 *param)
+ {
+ 	struct rtw_phl_stainfo_t *sta = (struct rtw_phl_stainfo_t *)param;
+-	return rtw_hal_set_dctrl_tbl_seciv((void *)phl_info->hal, sta, sta->sec_iv);
++	return rtw_hal_set_dctrl_tbl_seciv((void *)phl_info->hal, sta, sta->sec_iv) ==
++		       RTW_HAL_STATUS_SUCCESS ?
++		       RTW_PHL_STATUS_SUCCESS : RTW_PHL_STATUS_FAILURE;
+ }
+ #endif
+ 
+@@ -4815,4 +4817,3 @@ const char *rtw_phl_get_lstate_str(enum link_state lstate)
+ 		return "PHL_LINK_UNKNOWN";
+ 	}
+ }
+-
+diff --git i/drivers/staging/rtl8852bu/phl/phl_tx.c w/drivers/staging/rtl8852bu/phl/phl_tx.c
+index b648761bd..196bac561 100755
+--- i/drivers/staging/rtl8852bu/phl/phl_tx.c
++++ w/drivers/staging/rtl8852bu/phl/phl_tx.c
+@@ -2994,7 +2994,9 @@ phl_cmd_cfg_hw_seq_hdl(struct phl_info_t *phl_info, u8 *param)
+ 
+ 	PHL_INFO(" %s(), sta = %p !\n", __func__, sta);
+ 
+-	return rtw_hal_set_dctrl_tbl_seq((void *)phl_info->hal, sta, sta->hw_seq);
++	return rtw_hal_set_dctrl_tbl_seq((void *)phl_info->hal, sta, sta->hw_seq) ==
++		       RTW_HAL_STATUS_SUCCESS ?
++		       RTW_PHL_STATUS_SUCCESS : RTW_PHL_STATUS_FAILURE;
+ }
+ #endif
+ 
+diff --git i/drivers/staging/rtl8852bu/phl/test/phl_ps_dbg_cmd.c w/drivers/staging/rtl8852bu/phl/test/phl_ps_dbg_cmd.c
+index 86e851c2e..7ceab65af 100644
+--- i/drivers/staging/rtl8852bu/phl/test/phl_ps_dbg_cmd.c
++++ w/drivers/staging/rtl8852bu/phl/test/phl_ps_dbg_cmd.c
+@@ -129,7 +129,7 @@ void phl_ps_cmd_parser(struct phl_info_t *phl_info, char input[][MAX_ARGV],
+ 		PS_CNSL(out_len, used, output + used, out_len - used,
+ 			 "command not supported !!\n");
+ 
+-		/* fall through */
++		fallthrough;
+ 	case PHL_PS_HELP:
+ 		PS_CNSL(out_len, used, output + used, out_len - used,
+ 			 "PS cmd ==>\n");
+diff --git i/fs/btrfs/print-tree.c w/fs/btrfs/print-tree.c
+index 0c93439e9..344861e94 100644
+--- i/fs/btrfs/print-tree.c
++++ w/fs/btrfs/print-tree.c
+@@ -12,7 +12,7 @@
+ 
+ struct root_name_map {
+ 	u64 id;
+-	char name[16];
++	char name[17];
+ };
+ 
+ static const struct root_name_map root_map[] = {
+diff --git i/fs/btrfs/send.c w/fs/btrfs/send.c
+index 994c0be80..ed68b2217 100644
+--- i/fs/btrfs/send.c
++++ w/fs/btrfs/send.c
+@@ -8205,8 +8205,8 @@ long btrfs_ioctl_send(struct inode *inode, struct btrfs_ioctl_send_args *arg)
+ 		goto out;
+ 	}
+ 
+-	sctx->clone_roots = kvcalloc(sizeof(*sctx->clone_roots),
+-				     arg->clone_sources_count + 1,
++	sctx->clone_roots = kvcalloc(arg->clone_sources_count + 1,
++				     sizeof(*sctx->clone_roots),
+ 				     GFP_KERNEL);
+ 	if (!sctx->clone_roots) {
+ 		ret = -ENOMEM;

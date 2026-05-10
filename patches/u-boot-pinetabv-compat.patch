@@ -1,0 +1,357 @@
+diff --git a/Makefile b/Makefile
+index 20c1aa3f..415cbf47 100644
+--- a/Makefile
++++ b/Makefile
+@@ -628,6 +628,8 @@ endif
+ endif
+ endif
+ 
++KBUILD_LDFLAGS += $(call ld-option, --no-warn-rwx-segments)
++
+ # These are set by the arch-specific config.mk. Make sure they are exported
+ # so they can be used when building an EFI application.
+ export EFI_LDS		# Filename of EFI link script in arch/$(ARCH)/lib
+diff --git a/arch/riscv/include/asm/io.h b/arch/riscv/include/asm/io.h
+index acf5a964..5a0d0df7 100644
+--- a/arch/riscv/include/asm/io.h
++++ b/arch/riscv/include/asm/io.h
+@@ -459,4 +459,14 @@ out:
+ 
+ #include <asm-generic/io.h>
+ 
++#define writeb(v,c)	({ u8  __v = (v); __iowmb(); __arch_putb(__v, (c)); __v; })
++#define writew(v,c)	({ u16 __v = (v); __iowmb(); __arch_putw(__v, (c)); __v; })
++#define writel(v,c)	({ u32 __v = (v); __iowmb(); __arch_putl(__v, (c)); __v; })
++#define writeq(v,c)	({ u64 __v = (v); __iowmb(); __arch_putq(__v, (c)); __v; })
++
++#define readb(c)	({ u8  __v = __arch_getb(c); __iormb(); __v; })
++#define readw(c)	({ u16 __v = __arch_getw(c); __iormb(); __v; })
++#define readl(c)	({ u32 __v = __arch_getl(c); __iormb(); __v; })
++#define readq(c)	({ u64 __v = __arch_getq(c); __iormb(); __v; })
++
+ #endif	/* __ASM_RISCV_IO_H */
+diff --git a/board/pine64/pinetabv/Makefile b/board/pine64/pinetabv/Makefile
+index 22801015..83de9a91 100644
+--- a/board/pine64/pinetabv/Makefile
++++ b/board/pine64/pinetabv/Makefile
+@@ -6,4 +6,4 @@
+ obj-y	:= starfive_visionfive2.o
+ 
+ obj-$(CONFIG_SPL_BUILD) += spl.o
+-obj-$(CONFIG_ID_EEPROM) += visionfive2-i2c-eeprom.o
++obj-y += visionfive2-i2c-eeprom.o
+diff --git a/configs/pine64_pinetabv_defconfig b/configs/pine64_pinetabv_defconfig
+index 0d3f2141..65330c57 100644
+--- a/configs/pine64_pinetabv_defconfig
++++ b/configs/pine64_pinetabv_defconfig
+@@ -68,7 +68,7 @@ CONFIG_CMD_SYSBOOT=y
+ CONFIG_CMD_EXT4_WRITE=y
+ CONFIG_CMD_FS_UUID=y
+ CONFIG_CMD_LOG=y
+-CONFIG_OF_EMBED=y
++CONFIG_OF_SEPARATE=y
+ CONFIG_ENV_OVERWRITE=y
+ CONFIG_ENV_IS_IN_SPI_FLASH=y
+ CONFIG_VERSION_VARIABLE=y
+diff --git a/drivers/mmc/dw_mmc.c b/drivers/mmc/dw_mmc.c
+index c3236967..d79ae785 100644
+--- a/drivers/mmc/dw_mmc.c
++++ b/drivers/mmc/dw_mmc.c
+@@ -538,6 +538,7 @@ static int dwmci_set_ios(struct mmc *mmc)
+ 	return 0;
+ }
+ 
++#ifdef MMC_SUPPORTS_TUNING
+ static void dw_mci_hs_set_bits(struct dwmci_host *host, u32 smpl_phase)
+ {
+ 	/* change driver phase and sample phase */
+@@ -595,6 +596,7 @@ static int dwmci_execute_tuning(struct udevice *dev, uint opcode)
+ 	dwmci_writel(host, DWMCI_RINTSTS, DWMCI_INTMSK_ALL);
+ 	return err;
+ }
++#endif
+ 
+ static int dwmci_init(struct mmc *mmc)
+ {
+@@ -653,7 +655,9 @@ int dwmci_probe(struct udevice *dev)
+ const struct dm_mmc_ops dm_dwmci_ops = {
+ 	.send_cmd	= dwmci_send_cmd,
+ 	.set_ios	= dwmci_set_ios,
++#ifdef MMC_SUPPORTS_TUNING
+ 	.execute_tuning = dwmci_execute_tuning,
++#endif
+ };
+ 
+ #else
+diff --git a/drivers/net/rtl8169.c b/drivers/net/rtl8169.c
+index 3896760b..4296a481 100644
+--- a/drivers/net/rtl8169.c
++++ b/drivers/net/rtl8169.c
+@@ -311,7 +311,10 @@ static unsigned char rxdata[RX_BUF_LEN];
+ #if RTL8169_DESC_SIZE < ARCH_DMA_MINALIGN
+ #if !defined(CONFIG_SYS_NONCACHED_MEMORY) && \
+ 	!CONFIG_IS_ENABLED(SYS_DCACHE_OFF) && !defined(CONFIG_X86)
+-#warning cache-line size is larger than descriptor size
++/*
++ * Descriptors smaller than a cache line are problematic on cached DMA
++ * systems without non-cached descriptor memory.
++ */
+ #endif
+ #endif
+ 
+diff --git a/drivers/usb/cdns3/cdns3-starfive.c b/drivers/usb/cdns3/cdns3-starfive.c
+index 631fae21..0f395259 100644
+--- a/drivers/usb/cdns3/cdns3-starfive.c
++++ b/drivers/usb/cdns3/cdns3-starfive.c
+@@ -11,6 +11,7 @@
+ #include <clk.h>
+ #include <dm.h>
+ #include <dm/device_compat.h>
++#include <dm/lists.h>
+ #include <linux/usb/otg.h>
+ #include <reset.h>
+ #include <regmap.h>
+@@ -221,7 +222,6 @@ int cdns3_starfive_bind(struct udevice *parent)
+ {
+ 	enum usb_dr_mode dr_mode;
+ 	struct udevice *dev;
+-	const char *driver;
+ 	const char *name;
+ 	ofnode node;
+ 	int ret;
+diff --git a/drivers/video/starfive/sf_mipi.c b/drivers/video/starfive/sf_mipi.c
+index 380938f4..3b7ed7f9 100644
+--- a/drivers/video/starfive/sf_mipi.c
++++ b/drivers/video/starfive/sf_mipi.c
+@@ -572,11 +572,8 @@ free_clock_apb_clk:
+ static int dsi_sf_remove(struct udevice *dev)
+ {
+ 	struct dsi_sf_priv *priv = dev_get_priv(dev);
+-	struct mipi_dsi_device *device = &priv->device;
+-	struct dsi_sf_priv *dsi = dev_get_priv(dev);
+-	uint32_t val;
+ 
+-	sf_dphy_set_reg(dsi->sys_reg, 0,AON_GP_REG_SHIFT,AON_GP_REG_MASK);
++	sf_dphy_set_reg(priv->sys_reg, 0, AON_GP_REG_SHIFT, AON_GP_REG_MASK);
+ 
+ 	/*dphy*/
+ 	reset_assert(&priv->txbytehs_rst);//sys_mipi_dsi_set_ppi_txbyte_hs(0, priv_data);
+diff --git a/drivers/video/starfive_seeed_panel.c b/drivers/video/starfive_seeed_panel.c
+index ee51da7e..1c748359 100644
+--- a/drivers/video/starfive_seeed_panel.c
++++ b/drivers/video/starfive_seeed_panel.c
+@@ -224,7 +224,8 @@ static const struct display_timing default_timing = {
+ 	.vsync_len.typ		= 5,
+ };
+ 
+-static int seeed_panel_i2c_write(struct udevice *dev, uint addr, uint mask, uint data)
++static __maybe_unused int seeed_panel_i2c_write(struct udevice *dev, uint addr,
++						uint mask, uint data)
+ {
+ 	uint8_t valb;
+ 	int err = 0;
+@@ -241,7 +242,8 @@ static int seeed_panel_i2c_write(struct udevice *dev, uint addr, uint mask, uint
+ 	return err;
+ }
+ 
+-static int seeed_panel_i2c_read(struct udevice *dev, uint8_t addr, uint8_t *data)
++static __maybe_unused int seeed_panel_i2c_read(struct udevice *dev, uint8_t addr,
++					       uint8_t *data)
+ {
+ 	uint8_t valb;
+ 	int err;
+@@ -254,7 +256,8 @@ static int seeed_panel_i2c_read(struct udevice *dev, uint8_t addr, uint8_t *data
+ 	return 0;
+ }
+ 
+-static void rpi_touchscreen_write(struct udevice *dev, u16 reg, u32 val)
++static __maybe_unused void rpi_touchscreen_write(struct udevice *dev, u16 reg,
++						 u32 val)
+ {
+ 	struct mipi_dsi_panel_plat *plat = dev_get_plat(dev);
+ 	struct mipi_dsi_device *device = plat->device;
+@@ -282,7 +285,6 @@ static int rm68200_panel_enable_backlight(struct udevice *dev)
+ 	struct mipi_dsi_device *device = plat->device;
+ 	int ret;
+ 	int i;
+-	u8 reg_value = 0;
+ 	u32 num_init_cmds;
+ 	int err;
+ 
+@@ -324,7 +326,7 @@ static int rm68200_panel_enable_backlight(struct udevice *dev)
+ 
+ 	err =  mipi_dsi_dcs_set_display_on(device);
+ 	if (err < 0)
+-		printf(dev, "failed to set display on ret = %d\n", err);
++		dev_err(dev, "failed to set display on ret = %d\n", err);
+ 
+ 	return 0;
+ }
+@@ -344,13 +346,9 @@ static int rm68200_panel_of_to_plat(struct udevice *dev)
+ static int rm68200_panel_probe(struct udevice *dev)
+ {
+ 	struct mipi_dsi_panel_plat *plat = dev_get_plat(dev);
+-	struct seeed_panel_priv *priv = dev_get_priv(dev);
+-	int ret;
+ 
+ 	printf("%s,-----------\n", __func__);
+ 
+-	u8 reg_value = 0;
+-
+ 	/* fill characteristics of DSI data link */
+ 	plat->lanes = 4;
+ 	plat->format = MIPI_DSI_FMT_RGB888;
+diff --git a/include/command.h b/include/command.h
+index 137cfbc3..33ff49ec 100644
+--- a/include/command.h
++++ b/include/command.h
+@@ -231,8 +231,8 @@ enum command_ret_t {
+  *			number of ticks the command took to complete.
+  * @return 0 if the command succeeded, 1 if it failed
+  */
+-int cmd_process(int flag, int argc, char *const argv[], int *repeatable,
+-		unsigned long *ticks);
++enum command_ret_t cmd_process(int flag, int argc, char *const argv[],
++			       int *repeatable, unsigned long *ticks);
+ 
+ void fixup_cmdtable(struct cmd_tbl *cmdtp, int size);
+ 
+diff --git a/include/image.h b/include/image.h
+index 73a763a6..3f284f40 100644
+--- a/include/image.h
++++ b/include/image.h
+@@ -814,7 +814,8 @@ image_set_hdr_b(comp)		/* image_set_comp */
+ 
+ static inline void image_set_name(image_header_t *hdr, const char *name)
+ {
+-	strncpy(image_get_name(hdr), name, IH_NMLEN);
++	memset(image_get_name(hdr), 0, IH_NMLEN);
++	strncpy(image_get_name(hdr), name, IH_NMLEN - 1);
+ }
+ 
+ int image_check_hcrc(const image_header_t *hdr);
+diff --git a/lib/rsa/rsa-sign.c b/lib/rsa/rsa-sign.c
+index 0e0a890f..edef5325 100644
+--- a/lib/rsa/rsa-sign.c
++++ b/lib/rsa/rsa-sign.c
+@@ -545,7 +545,7 @@ err_engine:
+ /*
+  * rsa_get_exponent(): - Get the public exponent from an RSA key
+  */
+-static int rsa_get_exponent(RSA *key, uint64_t *e)
++static int rsa_get_exponent(const RSA *key, uint64_t *e)
+ {
+ 	int ret;
+ 	BIGNUM *bn_te;
+@@ -594,7 +594,7 @@ cleanup:
+ /*
+  * rsa_get_params(): - Get the important parameters of an RSA public key
+  */
+-int rsa_get_params(RSA *key, uint64_t *exponent, uint32_t *n0_invp,
++int rsa_get_params(const RSA *key, uint64_t *exponent, uint32_t *n0_invp,
+ 		   BIGNUM **modulusp, BIGNUM **r_squaredp)
+ {
+ 	BIGNUM *big1, *big2, *big32, *big2_32;
+@@ -673,7 +673,7 @@ int rsa_add_verify_data(struct image_sign_info *info, void *keydest)
+ 	char name[100];
+ 	int ret;
+ 	int bits;
+-	RSA *rsa;
++	const RSA *rsa;
+ 	EVP_PKEY *pkey = NULL;
+ 	ENGINE *e = NULL;
+ 
+diff --git a/scripts/Makefile.lib b/scripts/Makefile.lib
+index 07696e86..709e3e9e 100644
+--- a/scripts/Makefile.lib
++++ b/scripts/Makefile.lib
+@@ -402,7 +402,8 @@ $(obj)/%.efi: $(obj)/%_efi.so
+ 	$(call cmd,efi_objcopy)
+ 
+ quiet_cmd_efi_ld = LD      $@
+-cmd_efi_ld = $(LD) -nostdlib -znocombreloc -T $(EFI_LDS_PATH) -shared \
++cmd_efi_ld = $(LD) $(call ld-option, --no-warn-rwx-segments) \
++		-nostdlib -znocombreloc -T $(EFI_LDS_PATH) -shared \
+ 		-Bsymbolic -s $^ -o $@
+ 
+ EFI_LDS_PATH = $(srctree)/arch/$(ARCH)/lib/$(EFI_LDS)
+diff --git a/scripts/Makefile.spl b/scripts/Makefile.spl
+index 25a3e7fa..441496d8 100644
+--- a/scripts/Makefile.spl
++++ b/scripts/Makefile.spl
+@@ -61,6 +61,8 @@ endif
+ include $(srctree)/config.mk
+ include $(srctree)/arch/$(ARCH)/Makefile
+ 
++KBUILD_LDFLAGS += $(call ld-option, --no-warn-rwx-segments)
++
+ include $(srctree)/scripts/Makefile.lib
+ 
+ # Enable garbage collection of un-used sections for SPL
+diff --git a/scripts/dtc/libfdt/fdt_overlay.c b/scripts/dtc/libfdt/fdt_overlay.c
+index 7a65c35a..f7b7bc32 100644
+--- a/scripts/dtc/libfdt/fdt_overlay.c
++++ b/scripts/dtc/libfdt/fdt_overlay.c
+@@ -446,7 +446,8 @@ static int overlay_fixup_phandle(void *fdt, void *fdto, int symbols_off,
+ 		const char *fixup_str = value;
+ 		uint32_t path_len, name_len;
+ 		uint32_t fixup_len;
+-		char *sep, *endptr;
++		const char *sep;
++		char *endptr;
+ 		int poffset, ret;
+ 
+ 		fixup_end = memchr(value, '\0', len);
+diff --git a/tools/Makefile b/tools/Makefile
+index 4a86321f..886eb7e1 100644
+--- a/tools/Makefile
++++ b/tools/Makefile
+@@ -183,6 +183,12 @@ HOSTCFLAGS_mxsimage.o += -Wno-deprecated-declarations
+ HOSTCFLAGS_image-sig.o += -Wno-deprecated-declarations
+ HOSTCFLAGS_rsa-sign.o += -Wno-deprecated-declarations
+ endif
++
++HOSTCFLAGS_kwbimage.o += -Wno-deprecated-declarations
++HOSTCFLAGS_mxsimage.o += -Wno-deprecated-declarations
++HOSTCFLAGS_image-sig.o += -Wno-deprecated-declarations
++HOSTCFLAGS_rsa-sign.o += -Wno-deprecated-declarations
++HOSTCFLAGS_ecdsa-libcrypto.o += -Wno-deprecated-declarations
+ endif
+ 
+ HOSTCFLAGS_fit_image.o += -DMKIMAGE_DTC=\"$(CONFIG_MKIMAGE_DTC_PATH)\"
+@@ -253,7 +259,7 @@ HOSTCFLAGS_sha512.o := -pedantic -DCONFIG_SHA512 -DCONFIG_SHA384
+ quiet_cmd_wrap = WRAP    $@
+ cmd_wrap = echo "\#include <../$(patsubst $(obj)/%,%,$@)>" >$@
+ 
+-$(obj)/lib/%.c $(obj)/common/%.c $(obj)/env/%.c:
++$(obj)/lib/%.c $(obj)/common/%.c $(obj)/env/%.c &:
+ 	$(call cmd,wrap)
+ 
+ clean-dirs := lib common
+diff --git a/tools/atmelimage.c b/tools/atmelimage.c
+index 7b3b243d..226db348 100644
+--- a/tools/atmelimage.c
++++ b/tools/atmelimage.c
+@@ -55,7 +55,7 @@ static const char * const configs[] = {
+ static int atmel_find_pmecc_parameter_in_token(const char *token)
+ {
+ 	size_t pos;
+-	char *param;
++	const char *param;
+ 
+ 	debug("token: '%s'\n", token);
+ 
+diff --git a/tools/mxsimage.c b/tools/mxsimage.c
+index 002f4b52..5af9aa98 100644
+--- a/tools/mxsimage.c
++++ b/tools/mxsimage.c
+@@ -1618,7 +1618,8 @@ static int sb_load_cmdfile(struct sb_image_ctx *ictx)
+ 	return 0;
+ 
+ err_file:
+-	fclose(fp);
++	if (fp)
++		fclose(fp);
+ 	fprintf(stderr, "ERR: Failed to load file \"%s\"\n",
+ 		ictx->cfg_filename);
+ 	return -EINVAL;
