@@ -1,0 +1,49 @@
+From cde5a08f0eda9dfd869f7ba088898565f93657d8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 19:15:00 +0100
+Subject: [PATCH] drm/bridge: cdns-dsi: derive timeout from exact frame
+ duration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+HSTX and LPRX timeouts must cover at least one complete frame.  The
+existing calculation uses drm_mode_vrefresh(), which rounds to the
+nearest integer before the duration is calculated.  A mode just below
+an integer refresh rate therefore gets a timeout shorter than its real
+frame duration.
+
+The PineTab-V panel exposes the problem: its 66 MHz, 854 by 1295 timing
+is 59.678 Hz, but it is rounded to 60 Hz for the timeout.
+
+Calculate the frame duration directly from the pixel clock and totals,
+and round up to a TX byte clock.  This preserves the minimum-frame
+requirement without a board-specific refresh-rate margin.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+index 9bfd1a658..bec79095d 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+@@ -900,10 +900,13 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 	/*
+ 	 * HSTX and LPRX timeouts are both expressed in TX byte clk cycles and
+ 	 * both should be set to at least the time it takes to transmit a
+-	 * frame.
++	 * frame.  drm_mode_vrefresh() rounds to the nearest integer, which can
++	 * make the timeout shorter than one frame for modes just below an
++	 * integer refresh rate.  Derive the duration from the exact timings.
+ 	 */
+-	tmp = NSEC_PER_SEC / drm_mode_vrefresh(mode);
+-	tmp /= tx_byte_period;
++	tmp = DIV_ROUND_UP_ULL((u64)mode->crtc_htotal * mode->crtc_vtotal *
++			       NSEC_PER_SEC,
++			       (u64)mode->crtc_clock * 1000 * tx_byte_period);
+ 
+ 	for (div = 0; div <= CLK_DIV_MAX; div++) {
+ 		if (tmp <= HSTX_TIMEOUT_MAX)

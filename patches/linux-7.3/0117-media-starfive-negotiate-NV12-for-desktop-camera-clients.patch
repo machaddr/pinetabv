@@ -1,0 +1,726 @@
+From: Codex <noreply@openai.com>
+Date: Sat, 24 Oct 2026 13:00:00 +0100
+Subject: [PATCH] media: starfive: negotiate NV12 for desktop camera clients
+
+Plain V4L2 clients select a capture size without configuring subdevices.
+Previously S_FMT changed only the buffer layout, leaving the ISP source
+at its initial size. GNOME Camera then failed STREAMON with EPIPE.
+
+For the processed NV12 node, constrain TRY_FMT to the active ISP input
+and apply the matching even Bayer-phase crop during S_FMT. Advertise
+only sizes that this crop path can produce, and forward frame interval
+queries and changes to the active sensor. TRY_FMT never modifies the
+active graph. Keep the raw node's explicit media-controller interface.
+
+Expose the mux inputs through ENUMINPUT/G_INPUT/S_INPUT so users can
+select either camera with ordinary V4L2 tools while capture is idle.
+Read the selected input from the enabled links, preserving compatibility
+with media-controller tools. Propagate the selected sensor's Bayer mode
+through the complete graph and restore the previous route on failure.
+
+This uses the kernel ISP through the stock PipeWire V4L2 backend and does
+not depend on a locally modified libcamera pipeline handler. It does not
+turn on the board's flash LED, which is separate from camera streaming.
+
+Assisted-by: Codex (OpenAI)
+---
+
+diff --git a/drivers/staging/media/starfive/camss/stf-camss.c b/drivers/staging/media/starfive/camss/stf-camss.c
+--- a/drivers/staging/media/starfive/camss/stf-camss.c
++++ b/drivers/staging/media/starfive/camss/stf-camss.c
+@@ -221,7 +221,7 @@
+ }
+ 
+ /* Initialize from the sensor only after all nested notifiers have bound. */
+-static int stfcamss_init_pipeline_formats(struct v4l2_subdev *sd)
++int stfcamss_init_pipeline_formats(struct v4l2_subdev *sd)
+ {
+ 	struct v4l2_subdev_format format = {
+ 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+@@ -327,6 +327,7 @@
+ 		return -ENOMEM;
+ 
+ 	stfcamss->dev = dev;
++	mutex_init(&stfcamss->capture_lock);
+ 
+ 	for (i = 0; i < ARRAY_SIZE(stf_isrs); ++i) {
+ 		int irq;
+diff --git a/drivers/staging/media/starfive/camss/stf-camss.h b/drivers/staging/media/starfive/camss/stf-camss.h
+--- a/drivers/staging/media/starfive/camss/stf-camss.h
++++ b/drivers/staging/media/starfive/camss/stf-camss.h
+@@ -12,6 +12,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/delay.h>
++#include <linux/mutex.h>
+ #include <linux/reset.h>
+ #include <media/media-device.h>
+ #include <media/media-entity.h>
+@@ -51,6 +52,7 @@
+ 	struct v4l2_device v4l2_dev;
+ 	struct media_device media_dev;
+ 	struct media_pipeline pipe;
++	struct mutex capture_lock; /* Both video nodes and their vb2 queues. */
+ 	struct device *dev;
+ 	int irq[3];
+ 	struct stf_isp_dev isp_dev;
+@@ -63,6 +65,8 @@
+ 	struct reset_control_bulk_data sys_rst[STF_RST_NUM];
+ 	int nrsts;
+ };
++
++int stfcamss_init_pipeline_formats(struct v4l2_subdev *sd);
+ 
+ struct stfcamss_async_subdev {
+ 	struct v4l2_async_connection asd;  /* must be first */
+diff --git a/drivers/staging/media/starfive/camss/stf-video.c b/drivers/staging/media/starfive/camss/stf-video.c
+--- a/drivers/staging/media/starfive/camss/stf-video.c
++++ b/drivers/staging/media/starfive/camss/stf-video.c
+@@ -107,6 +107,443 @@
+ 	return 0;
+ }
+ 
++/* The processed node is usable by ordinary V4L2 clients, without libcamera. */
++static bool stf_video_is_yuv(struct stfcamss_video *video)
++{
++	return video == &video->stfcamss->captures[STF_CAPTURE_YUV].video;
++}
++
++static struct v4l2_subdev *stf_video_upstream(struct v4l2_subdev *sd)
++{
++	struct media_pad *pad, *remote;
++
++	media_entity_for_each_pad(&sd->entity, pad) {
++		if (!(pad->flags & MEDIA_PAD_FL_SINK))
++			continue;
++		remote = media_pad_remote_pad_first(pad);
++		if (remote && is_media_entity_v4l2_subdev(remote->entity))
++			return media_entity_to_v4l2_subdev(remote->entity);
++	}
++
++	return NULL;
++}
++
++static struct v4l2_subdev *stf_video_find_subdev(struct stfcamss_video *video,
++						 unsigned int function)
++{
++	struct v4l2_subdev *sd = video->source_subdev;
++	unsigned int depth;
++
++	for (depth = 0; sd && depth < 8; depth++) {
++		if (sd->entity.function == function)
++			return sd;
++		sd = stf_video_upstream(sd);
++	}
++
++	return NULL;
++}
++
++static int stf_video_isp_bounds(struct stfcamss_video *video,
++				struct v4l2_mbus_framefmt *bounds)
++{
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.pad = STF_ISP_PAD_SINK,
++	};
++	int ret;
++
++	ret = v4l2_subdev_call_state_active(&video->stfcamss->isp_dev.subdev,
++					    pad, get_fmt, &format);
++	if (!ret)
++		*bounds = format.format;
++
++	return ret;
++}
++
++static int stf_video_try_yuv(struct stfcamss_video *video, struct v4l2_format *f)
++{
++	struct v4l2_mbus_framefmt bounds;
++	int ret;
++
++	ret = stf_video_isp_bounds(video, &bounds);
++	if (ret)
++		return ret;
++
++	f->fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
++	/* The ISP crops; it does not upscale or resample the sensor image. */
++	f->fmt.pix.width = clamp_t(u32, f->fmt.pix.width,
++				   STFCAMSS_FRAME_MIN_WIDTH, bounds.width) & ~7;
++	f->fmt.pix.height = clamp_t(u32, f->fmt.pix.height,
++				    STFCAMSS_FRAME_MIN_HEIGHT, bounds.height) & ~1;
++
++	return __video_try_fmt(video, f);
++}
++
++static int stf_video_sensor_format(struct v4l2_subdev *sensor,
++				   struct v4l2_subdev_format *format)
++{
++	struct media_pad *pad;
++
++	media_entity_for_each_pad(&sensor->entity, pad) {
++		if (!(pad->flags & MEDIA_PAD_FL_SOURCE))
++			continue;
++		format->which = V4L2_SUBDEV_FORMAT_ACTIVE;
++		format->pad = pad->index;
++		return v4l2_subdev_call_state_active(sensor, pad, get_fmt, format);
++	}
++
++	return -ENOLINK;
++}
++
++static int stf_video_frame_interval(struct stfcamss_video *video,
++				    struct v4l2_fract *interval, bool set)
++{
++	struct v4l2_subdev *sensor;
++	struct v4l2_subdev_format format = { 0 };
++	struct v4l2_subdev_frame_interval fi = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.interval = *interval,
++	};
++	struct v4l2_subdev_frame_interval_enum fie = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	int ret;
++
++	sensor = stf_video_find_subdev(video, MEDIA_ENT_F_CAM_SENSOR);
++	if (!sensor)
++		return -ENOLINK;
++	ret = stf_video_sensor_format(sensor, &format);
++	if (ret)
++		return ret;
++
++	fi.pad = format.pad;
++	if (set && interval->numerator && interval->denominator) {
++		ret = v4l2_subdev_call_state_active(sensor, pad,
++						    set_frame_interval, &fi);
++		if (!ret) {
++			*interval = fi.interval;
++			return 0;
++		}
++		if (ret != -ENOIOCTLCMD)
++			return ret;
++	}
++
++	ret = v4l2_subdev_call_state_active(sensor, pad, get_frame_interval, &fi);
++	if (!ret) {
++		*interval = fi.interval;
++		return 0;
++	}
++	if (ret != -ENOIOCTLCMD)
++		return ret;
++
++	/* Fixed-mode sensors may expose only enum_frame_interval. */
++	fie.pad = format.pad;
++	fie.code = format.format.code;
++	fie.width = format.format.width;
++	fie.height = format.format.height;
++	ret = v4l2_subdev_call_state_active(sensor, pad, enum_frame_interval, &fie);
++	if (!ret)
++		*interval = fie.interval;
++
++	return ret;
++}
++
++static int video_enum_frameintervals(struct file *file, void *fh,
++				     struct v4l2_frmivalenum *fival)
++{
++	struct stfcamss_video *video = video_drvdata(file);
++	struct v4l2_subdev *sensor;
++	struct v4l2_mbus_framefmt bounds;
++	struct v4l2_subdev_format format = { 0 };
++	struct v4l2_subdev_frame_interval_enum fie = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.index = fival->index,
++	};
++	int ret;
++
++	if (!stf_video_is_yuv(video) || fival->pixel_format != V4L2_PIX_FMT_NV12)
++		return -EINVAL;
++
++	mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++	ret = stf_video_isp_bounds(video, &bounds);
++	if (ret)
++		goto out;
++	if (fival->width < STFCAMSS_FRAME_MIN_WIDTH ||
++	    fival->height < STFCAMSS_FRAME_MIN_HEIGHT ||
++	    fival->width > bounds.width || fival->height > bounds.height ||
++	    fival->width % 8 || fival->height % 2) {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	sensor = stf_video_find_subdev(video, MEDIA_ENT_F_CAM_SENSOR);
++	if (!sensor) {
++		ret = -ENOLINK;
++		goto out;
++	}
++	ret = stf_video_sensor_format(sensor, &format);
++	if (ret)
++		goto out;
++
++	/* Cropping changes the output size, not the sensor frame period. */
++	fie.pad = format.pad;
++	fie.code = format.format.code;
++	fie.width = format.format.width;
++	fie.height = format.format.height;
++	ret = v4l2_subdev_call_state_active(sensor, pad, enum_frame_interval, &fie);
++	if (!ret) {
++		fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
++		fival->discrete = fie.interval;
++	}
++out:
++	mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++	return ret;
++}
++
++static int video_g_parm(struct file *file, void *fh, struct v4l2_streamparm *parm)
++{
++	struct stfcamss_video *video = video_drvdata(file);
++	struct v4l2_subdev *sensor;
++	struct v4l2_fract interval = { 0 };
++	int ret;
++
++	if (!stf_video_is_yuv(video) || parm->type != video->type)
++		return -EINVAL;
++	mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++	ret = stf_video_frame_interval(video, &interval, false);
++	if (!ret) {
++		memset(&parm->parm.capture, 0, sizeof(parm->parm.capture));
++		sensor = stf_video_find_subdev(video, MEDIA_ENT_F_CAM_SENSOR);
++		if (v4l2_subdev_has_op(sensor, pad, set_frame_interval))
++			parm->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
++		parm->parm.capture.timeperframe = interval;
++	}
++	mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++	return ret;
++}
++
++static int video_s_parm(struct file *file, void *fh, struct v4l2_streamparm *parm)
++{
++	struct stfcamss_video *video = video_drvdata(file);
++	struct v4l2_fract interval = parm->parm.capture.timeperframe;
++	int ret;
++
++	if (!stf_video_is_yuv(video) || parm->type != video->type)
++		return -EINVAL;
++	if (vb2_is_streaming(&video->vb2_q))
++		return -EBUSY;
++
++	mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++	ret = stf_video_frame_interval(video, &interval, true);
++	mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++	if (ret)
++		return ret;
++
++	return video_g_parm(file, fh, parm);
++}
++
++static struct media_link *stf_video_input_link(struct v4l2_subdev *mux,
++					       unsigned int input)
++{
++	struct media_link *link;
++
++	for_each_media_entity_data_link(&mux->entity, link) {
++		if (link->sink->entity == &mux->entity &&
++		    link->sink->index == input &&
++		    is_media_entity_v4l2_subdev(link->source->entity))
++			return link;
++	}
++
++	return NULL;
++}
++
++static int video_enum_input(struct file *file, void *fh, struct v4l2_input *input)
++{
++	struct stfcamss_video *video = video_drvdata(file);
++	struct v4l2_subdev *mux;
++	struct media_link *link;
++	int ret = -EINVAL;
++
++	if (!stf_video_is_yuv(video))
++		return -EINVAL;
++	mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++	mux = stf_video_find_subdev(video, MEDIA_ENT_F_VID_MUX);
++	if (!mux)
++		goto out;
++	link = stf_video_input_link(mux, input->index);
++	if (!link)
++		goto out;
++
++	input->type = V4L2_INPUT_TYPE_CAMERA;
++	input->capabilities = 0;
++	strscpy(input->name, link->source->entity->name, sizeof(input->name));
++	ret = 0;
++out:
++	mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++	return ret;
++}
++
++static int video_g_input(struct file *file, void *fh, unsigned int *input)
++{
++	struct stfcamss_video *video = video_drvdata(file);
++	struct v4l2_subdev *mux;
++	struct media_link *link;
++	int ret = -ENOLINK;
++
++	if (!stf_video_is_yuv(video))
++		return -EINVAL;
++	mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++	mux = stf_video_find_subdev(video, MEDIA_ENT_F_VID_MUX);
++	if (!mux)
++		goto out;
++	for_each_media_entity_data_link(&mux->entity, link) {
++		if (link->sink->entity == &mux->entity &&
++		    (link->flags & MEDIA_LNK_FL_ENABLED)) {
++			*input = link->sink->index;
++			ret = 0;
++			break;
++		}
++	}
++out:
++	mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++	return ret;
++}
++
++static int video_s_input(struct file *file, void *fh, unsigned int input)
++{
++	struct stfcamss_video *video = video_drvdata(file);
++	struct stfcamss *stfcamss = video->stfcamss;
++	struct v4l2_subdev *mux, *sensor;
++	struct media_link *desired, *active_link = NULL, *link;
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.format = {
++			.width = 1280,
++			.height = 720,
++			.code = MEDIA_BUS_FMT_SRGGB10_1X10,
++		},
++	};
++	struct v4l2_subdev_selection saved_crop = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.pad = STF_ISP_PAD_SRC,
++		.target = V4L2_SEL_TGT_CROP,
++	};
++	struct v4l2_subdev_format saved_sensor_format = { 0 };
++	struct v4l2_format saved_capture_formats[STF_CAPTURE_NUM];
++	struct v4l2_subdev_mbus_code_enum code = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	unsigned int i;
++	int ret;
++
++	if (!stf_video_is_yuv(video))
++		return -EINVAL;
++	mutex_lock(&stfcamss->media_dev.graph_mutex);
++	ret = -EBUSY;
++	for (i = 0; i < STF_CAPTURE_NUM; i++) {
++		if (vb2_is_busy(&stfcamss->captures[i].video.vb2_q))
++			goto out;
++		saved_capture_formats[i] = stfcamss->captures[i].video.active_fmt;
++	}
++	if (media_entity_pipeline(&stfcamss->isp_dev.subdev.entity))
++		goto out;
++
++	ret = -ENOLINK;
++	mux = stf_video_find_subdev(video, MEDIA_ENT_F_VID_MUX);
++	if (!mux)
++		goto out;
++	desired = stf_video_input_link(mux, input);
++	if (!desired) {
++		ret = -EINVAL;
++		goto out;
++	}
++	for_each_media_entity_data_link(&mux->entity, link) {
++		if (link->sink->entity == &mux->entity &&
++		    (link->flags & MEDIA_LNK_FL_ENABLED)) {
++			active_link = link;
++			break;
++		}
++	}
++
++	ret = v4l2_subdev_call_state_active(&stfcamss->isp_dev.subdev,
++					    pad, get_selection, &saved_crop);
++	if (ret)
++		goto out;
++	sensor = media_entity_to_v4l2_subdev(desired->source->entity);
++	ret = stf_video_sensor_format(sensor, &saved_sensor_format);
++	if (ret)
++		goto out;
++	format.pad = desired->source->index;
++	code.pad = format.pad;
++	/* Select a Bayer code that the ISP accepts, including OV5640 RAW8. */
++	for (i = 0; ; i++) {
++		code.index = i;
++		ret = v4l2_subdev_call_state_active(sensor, pad, enum_mbus_code, &code);
++		if (ret)
++			goto out;
++		if (code.code == MEDIA_BUS_FMT_SRGGB10_1X10 ||
++		    code.code == MEDIA_BUS_FMT_SRGGB8_1X8) {
++			format.format.code = code.code;
++			break;
++		}
++	}
++	ret = v4l2_subdev_call_state_active(sensor, pad, set_fmt, &format);
++	if (ret)
++		goto out;
++
++	if (active_link != desired) {
++		if (active_link) {
++			ret = __media_entity_setup_link(active_link,
++							active_link->flags & ~MEDIA_LNK_FL_ENABLED);
++			if (ret)
++				goto restore;
++		}
++		ret = __media_entity_setup_link(desired,
++						desired->flags | MEDIA_LNK_FL_ENABLED);
++		if (ret)
++			goto restore;
++	}
++
++	ret = stfcamss_init_pipeline_formats(&stfcamss->isp_dev.subdev);
++	if (ret)
++		goto restore;
++	for (i = 0; i < STF_CAPTURE_NUM; i++) {
++		struct stfcamss_video *capture = &stfcamss->captures[i].video;
++
++		format.pad = capture->source_pad;
++		ret = v4l2_subdev_call_state_active(capture->source_subdev,
++						    pad, get_fmt, &format);
++		if (ret)
++			goto restore;
++		ret = stf_video_init_format(capture, &format.format);
++		if (ret)
++			goto restore;
++	}
++	goto out;
++restore:
++	if (active_link != desired) {
++		if (__media_entity_setup_link(desired,
++					      desired->flags & ~MEDIA_LNK_FL_ENABLED))
++			dev_err(stfcamss->dev, "failed to disable camera input on rollback\n");
++		if (active_link &&
++		    __media_entity_setup_link(active_link,
++					      active_link->flags | MEDIA_LNK_FL_ENABLED))
++			dev_err(stfcamss->dev, "failed to restore camera input\n");
++	}
++	if (v4l2_subdev_call_state_active(sensor, pad, set_fmt, &saved_sensor_format))
++		dev_err(stfcamss->dev, "failed to restore camera sensor format\n");
++	if (stfcamss_init_pipeline_formats(&stfcamss->isp_dev.subdev))
++		dev_err(stfcamss->dev, "failed to restore camera pipeline formats\n");
++	if (v4l2_subdev_call_state_active(&stfcamss->isp_dev.subdev,
++					  pad, set_selection, &saved_crop))
++		dev_err(stfcamss->dev, "failed to restore camera crop\n");
++	for (i = 0; i < STF_CAPTURE_NUM; i++)
++		stfcamss->captures[i].video.active_fmt = saved_capture_formats[i];
++out:
++	mutex_unlock(&stfcamss->media_dev.graph_mutex);
++	return ret;
++}
++
+ int stf_video_init_format(struct stfcamss_video *video,
+ 			  const struct v4l2_mbus_framefmt *mbus_fmt)
+ {
+@@ -277,8 +714,13 @@
+ 	if (pix->pixelformat != fi->pixelformat ||
+ 	    pix->height != sd_fmt.format.height ||
+ 	    pix->width != sd_fmt.format.width ||
+-	    pix->field != sd_fmt.format.field)
++	    pix->field != sd_fmt.format.field) {
++		dev_err_ratelimited(video->stfcamss->dev,
++				    "%s: buffer %ux%u %p4cc differs from source %ux%u %p4cc\n",
++			video->vdev.name, pix->width, pix->height, &pix->pixelformat,
++			sd_fmt.format.width, sd_fmt.format.height, &fi->pixelformat);
+ 		return -EPIPE;
++	}
+ 
+ 	return 0;
+ }
+@@ -409,6 +851,26 @@
+ 	if (i == video->nformats)
+ 		return -EINVAL;
+ 
++	if (stf_video_is_yuv(video)) {
++		struct v4l2_mbus_framefmt bounds;
++		int ret;
++
++		mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++		ret = stf_video_isp_bounds(video, &bounds);
++		mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++		if (ret)
++			return ret;
++
++		fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
++		fsize->stepwise.min_width = STFCAMSS_FRAME_MIN_WIDTH;
++		fsize->stepwise.max_width = bounds.width & ~7;
++		fsize->stepwise.min_height = STFCAMSS_FRAME_MIN_HEIGHT;
++		fsize->stepwise.max_height = bounds.height & ~1;
++		fsize->stepwise.step_width = 8;
++		fsize->stepwise.step_height = 2;
++		return 0;
++	}
++
+ 	fsize->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
+ 	fsize->stepwise.min_width = STFCAMSS_FRAME_MIN_WIDTH;
+ 	fsize->stepwise.max_width = STFCAMSS_FRAME_MAX_WIDTH;
+@@ -432,31 +894,74 @@
+ static int video_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
+ {
+ 	struct stfcamss_video *video = video_drvdata(file);
++	struct stfcamss *stfcamss = video->stfcamss;
++	struct v4l2_subdev_selection crop = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++		.pad = STF_ISP_PAD_SRC,
++		.target = V4L2_SEL_TGT_CROP,
++	};
++	struct v4l2_mbus_framefmt bounds;
+ 	int ret;
+ 
+ 	if (vb2_is_busy(&video->vb2_q))
+ 		return -EBUSY;
+ 
+-	ret = __video_try_fmt(video, f);
+-	if (ret < 0)
++	if (!stf_video_is_yuv(video)) {
++		ret = __video_try_fmt(video, f);
++		if (!ret)
++			video->active_fmt = *f;
+ 		return ret;
+-
+-	video->active_fmt = *f;
+-
+-	return 0;
++	}
++
++	mutex_lock(&stfcamss->media_dev.graph_mutex);
++	if (media_entity_pipeline(&stfcamss->isp_dev.subdev.entity)) {
++		ret = -EBUSY;
++		goto out;
++	}
++	ret = stf_video_try_yuv(video, f);
++	if (ret)
++		goto out;
++	ret = stf_video_isp_bounds(video, &bounds);
++	if (ret)
++		goto out;
++
++	crop.r.width = f->fmt.pix.width;
++	crop.r.height = f->fmt.pix.height;
++	crop.r.left = ((bounds.width - crop.r.width) / 2) & ~1;
++	crop.r.top = ((bounds.height - crop.r.height) / 2) & ~1;
++	ret = v4l2_subdev_call_state_active(&stfcamss->isp_dev.subdev, pad,
++					    set_selection, &crop);
++	if (!ret)
++		video->active_fmt = *f;
++out:
++	mutex_unlock(&stfcamss->media_dev.graph_mutex);
++	return ret;
+ }
+ 
+ static int video_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
+ {
+ 	struct stfcamss_video *video = video_drvdata(file);
+-
+-	return __video_try_fmt(video, f);
++	int ret;
++
++	if (!stf_video_is_yuv(video))
++		return __video_try_fmt(video, f);
++
++	mutex_lock(&video->stfcamss->media_dev.graph_mutex);
++	ret = stf_video_try_yuv(video, f);
++	mutex_unlock(&video->stfcamss->media_dev.graph_mutex);
++	return ret;
+ }
+ 
+ static const struct v4l2_ioctl_ops stf_vid_ioctl_ops = {
+ 	.vidioc_querycap                = video_querycap,
+ 	.vidioc_enum_fmt_vid_cap        = video_enum_fmt,
+ 	.vidioc_enum_framesizes         = video_enum_framesizes,
++	.vidioc_enum_frameintervals     = video_enum_frameintervals,
++	.vidioc_g_parm                  = video_g_parm,
++	.vidioc_s_parm                  = video_s_parm,
++	.vidioc_enum_input              = video_enum_input,
++	.vidioc_g_input                 = video_g_input,
++	.vidioc_s_input                 = video_s_input,
+ 	.vidioc_g_fmt_vid_cap           = video_g_fmt,
+ 	.vidioc_s_fmt_vid_cap           = video_s_fmt,
+ 	.vidioc_try_fmt_vid_cap         = video_try_fmt,
+@@ -507,12 +1012,8 @@
+ 
+ static void stf_video_release(struct video_device *vdev)
+ {
+-	struct stfcamss_video *video = video_get_drvdata(vdev);
+-
+ 	media_entity_cleanup(&vdev->entity);
+ 
+-	mutex_destroy(&video->q_lock);
+-	mutex_destroy(&video->lock);
+ }
+ 
+ int stf_video_register(struct stfcamss_video *video,
+@@ -523,8 +1024,6 @@
+ 	struct media_pad *pad = &video->pad;
+ 	int ret;
+ 
+-	mutex_init(&video->q_lock);
+-	mutex_init(&video->lock);
+ 
+ 	q = &video->vb2_q;
+ 	q->drv_priv = video;
+@@ -535,13 +1034,13 @@
+ 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+ 	q->buf_struct_size = sizeof(struct stfcamss_buffer);
+ 	q->dev = video->stfcamss->dev;
+-	q->lock = &video->q_lock;
++	q->lock = &video->stfcamss->capture_lock;
+ 	q->min_queued_buffers = STFCAMSS_MIN_BUFFERS;
+ 	ret = vb2_queue_init(q);
+ 	if (ret < 0) {
+ 		dev_err(video->stfcamss->dev,
+ 			"Failed to init vb2 queue: %d\n", ret);
+-		goto err_mutex_destroy;
++		goto err_return;
+ 	}
+ 
+ 	pad->flags = MEDIA_PAD_FL_SINK;
+@@ -549,7 +1048,7 @@
+ 	if (ret < 0) {
+ 		dev_err(video->stfcamss->dev,
+ 			"Failed to init video entity: %d\n", ret);
+-		goto err_mutex_destroy;
++		goto err_return;
+ 	}
+ 
+ 	ret = stf_video_init_format(video, NULL);
+@@ -567,7 +1066,7 @@
+ 	vdev->release = stf_video_release;
+ 	vdev->v4l2_dev = v4l2_dev;
+ 	vdev->queue = &video->vb2_q;
+-	vdev->lock = &video->lock;
++	vdev->lock = &video->stfcamss->capture_lock;
+ 	strscpy(vdev->name, name, sizeof(vdev->name));
+ 
+ 	video_set_drvdata(vdev, video);
+@@ -583,9 +1082,7 @@
+ 
+ err_media_cleanup:
+ 	media_entity_cleanup(&vdev->entity);
+-err_mutex_destroy:
+-	mutex_destroy(&video->lock);
+-	mutex_destroy(&video->q_lock);
++err_return:
+ 	return ret;
+ }
+ 
+diff --git a/drivers/staging/media/starfive/camss/stf-video.h b/drivers/staging/media/starfive/camss/stf-video.h
+--- a/drivers/staging/media/starfive/camss/stf-video.h
++++ b/drivers/staging/media/starfive/camss/stf-video.h
+@@ -75,8 +75,6 @@
+ 	struct v4l2_format active_fmt;
+ 	enum v4l2_buf_type type;
+ 	const struct stfcamss_video_ops *ops;
+-	struct mutex lock;	 /* serialize device access */
+-	struct mutex q_lock;	 /* protects the queue */
+ 	unsigned int bpl_alignment;
+ 	const struct stfcamss_format_info *formats;
+ 	unsigned int nformats;

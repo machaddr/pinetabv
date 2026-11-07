@@ -1,0 +1,44 @@
+From 18fa5c82a9a1501c608568236bc5f52b4d311106 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Thu, 27 Aug 2026 15:00:00 +0100
+Subject: [PATCH] riscv: expose CPU compatible as model name
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+RISC-V exports the first CPU compatible string as "uarch" in
+/proc/cpuinfo.  Several established userspace consumers, including libgtop
+and screenfetch, only recognize the conventional "model name" key and leave
+the processor identity empty on otherwise correctly described systems.
+
+Expose the same standardized CPU compatible value through "model name" as
+an additional compatibility field.  Preserve "uarch" and all existing
+RISC-V cpuinfo fields unchanged.
+
+On JH7110 this identifies each application hart as sifive,u74-mc, matching
+the CPU compatible in the upstream device tree binding.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ arch/riscv/kernel/cpu.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/arch/riscv/kernel/cpu.c b/arch/riscv/kernel/cpu.c
+index c6eb606d5ac0..c1520d002c46 100644
+--- a/arch/riscv/kernel/cpu.c
++++ b/arch/riscv/kernel/cpu.c
+@@ -326,8 +326,10 @@ static int c_show(struct seq_file *m, void *v)
+ 		node = of_get_cpu_node(cpu_id, NULL);
+ 
+ 		if (!of_property_read_string(node, "compatible", &compat) &&
+-		    strcmp(compat, "riscv"))
++		    strcmp(compat, "riscv")) {
++			seq_printf(m, "model name\t: %s\n", compat);
+ 			seq_printf(m, "uarch\t\t: %s\n", compat);
++		}
+ 
+ 		of_node_put(node);
+ 	}
+-- 
+2.55.0

@@ -1,0 +1,75 @@
+From 4f72dfa6313284bf6f09a49adcaeea821c05bb25 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 22:16:00 +0100
+Subject: [PATCH] drm/verisilicon: keep JH7110 display NoC alive
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The JH7110 display NoC AXI clock is a sibling of the VOUT AXI gate, not
+one of its parents.  Enabling the DC8200 AXI clock therefore does not
+keep the NoC path enabled.  Firmware happens to leave the gate enabled,
+but the common clock framework turns it off during late unused-clock
+cleanup and the active display then loses its memory path.
+
+Acquire and enable an optional NoC clock for implementations which
+describe it.  Add its optional reset to the existing bulk reset array.
+Bulk deassertion runs in reverse order, so appending it also releases the
+NoC reset before the three DC8200-local resets.
+
+The resources remain optional so this does not change TH1520 operation.
+
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/drivers/gpu/drm/verisilicon/vs_dc.c
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/verisilicon/vs_dc.c | 7 +++++++
+ drivers/gpu/drm/verisilicon/vs_dc.h | 3 ++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_dc.c b/drivers/gpu/drm/verisilicon/vs_dc.c
+--- a/drivers/gpu/drm/verisilicon/vs_dc.c
++++ b/drivers/gpu/drm/verisilicon/vs_dc.c
+@@ -78,6 +78,7 @@ static int vs_dc_probe(struct platform_device *pdev)
+ 	dc->rsts[0].id = "core";
+ 	dc->rsts[1].id = "axi";
+ 	dc->rsts[2].id = "ahb";
++	dc->rsts[3].id = "noc";
+ 
+ 	ret = devm_reset_control_bulk_get_optional_shared(dev, VSDC_RESET_COUNT,
+ 							  dc->rsts);
+@@ -107,6 +108,12 @@ static int vs_dc_probe(struct platform_device *pdev)
+ 		return PTR_ERR(dc->ahb_clk);
+ 	}
+ 
++	dc->noc_clk = devm_clk_get_optional_enabled(dev, "noc");
++	if (IS_ERR(dc->noc_clk)) {
++		dev_err(dev, "can't get NoC clock\n");
++		return PTR_ERR(dc->noc_clk);
++	}
++
+ 	irq = platform_get_irq(pdev, 0);
+ 	if (irq < 0) {
+ 		dev_err(dev, "can't get irq\n");
+diff --git a/drivers/gpu/drm/verisilicon/vs_dc.h b/drivers/gpu/drm/verisilicon/vs_dc.h
+--- a/drivers/gpu/drm/verisilicon/vs_dc.h
++++ b/drivers/gpu/drm/verisilicon/vs_dc.h
+@@ -17,7 +17,7 @@
+ #include "vs_hwdb.h"
+ 
+ #define VSDC_MAX_OUTPUTS 2
+-#define VSDC_RESET_COUNT 3
++#define VSDC_RESET_COUNT 4
+ 
+ struct vs_drm_dev;
+ struct vs_crtc;
+@@ -28,6 +28,7 @@ struct vs_dc {
+ 	struct clk *core_clk;
+ 	struct clk *axi_clk;
+ 	struct clk *ahb_clk;
++	struct clk *noc_clk;
+ 	struct clk *pix_clk[VSDC_MAX_OUTPUTS];
+ 	struct clk *lcd_clk;
+ 	struct reset_control_bulk_data rsts[VSDC_RESET_COUNT];
+-- 
+2.55.0

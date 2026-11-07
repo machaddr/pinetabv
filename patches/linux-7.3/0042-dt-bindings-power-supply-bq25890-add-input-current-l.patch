@@ -1,0 +1,58 @@
+From 8516f6e5996756079ff669f413cf8233d5985f29 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:34:11 +0100
+Subject: [PATCH 42/53] dt-bindings: power: supply: bq25890: add input current
+ limit
+
+Document the standard initial input-current-limit-microamp property and
+its 100 mA to 3.25 A register range. Also describe the SC89890H encoding
+differences and datasheet source.
+
+Assisted-by: Codex:gpt-5
+---
+ .../devicetree/bindings/power/supply/bq25890.yaml | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/power/supply/bq25890.yaml b/Documentation/devicetree/bindings/power/supply/bq25890.yaml
+index a252eba2b7f29..655d158aad03b 100644
+--- a/Documentation/devicetree/bindings/power/supply/bq25890.yaml
++++ b/Documentation/devicetree/bindings/power/supply/bq25890.yaml
+@@ -10,6 +10,12 @@ title: TI BQ25890 family and SouthChip SC89890H Li-Ion Charger
+ maintainers:
+   - Sebastian Reichel <sre@kernel.org>
+ 
++description: |
++  The SC89890H is register-compatible with the BQ25890 family, with different
++  encodings for charge, termination, precharge, boost voltage, and boost
++  current. Its datasheet is available at:
++  https://www.southchip.com/upload/file/SC89890H_Final_Datasheet_v1_0_0.pdf
++
+ allOf:
+   - $ref: power-supply.yaml#
+ 
+@@ -64,6 +70,14 @@ properties:
+     $ref: /schemas/types.yaml#/definitions/uint32
+     description: maximum allowed current draw in boost mode (in uA)
+ 
++  input-current-limit-microamp:
++    description:
++      Initial input current limit. The value is programmed after device reset
++      and may later be changed by charger-type detection or userspace.
++    minimum: 100000
++    maximum: 3250000
++    multipleOf: 50000
++
+   ti,boost-low-freq:
+     description: boost mode frequency will be 500kHz, otherwise 1.5MHz
+     type: boolean
+@@ -121,6 +135,7 @@ examples:
+         ti,minimum-sys-voltage = <3600000>;
+         ti,boost-voltage = <5000000>;
+         ti,boost-max-current = <1000000>;
++        input-current-limit-microamp = <2000000>;
+ 
+         ti,use-ilim-pin;
+         ti,thermal-regulation-threshold = <120>;
+-- 
+2.55.0
+

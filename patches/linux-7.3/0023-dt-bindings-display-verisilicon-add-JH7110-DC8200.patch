@@ -1,0 +1,59 @@
+From f3d36f9e3ffdf43ab135e52d394f78fc70818cc3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 16:43:50 +0100
+Subject: [PATCH 23/53] dt-bindings: display: verisilicon: add JH7110 DC8200
+
+Describe the non-coherent StarFive JH7110 integration of the discoverable
+DC8200 controller, including its VOUT power domain and reset requirements.
+
+Assisted-by: Codex:gpt-5
+---
+ .../devicetree/bindings/display/verisilicon,dc.yaml   | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git i/Documentation/devicetree/bindings/display/verisilicon,dc.yaml w/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+index 919a90012..49b74487d 100644
+--- i/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
++++ w/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+@@ -16,6 +16,7 @@ properties:
+   compatible:
+     items:
+       - enum:
++          - starfive,jh7110-dc8200
+           - thead,th1520-dc8200
+       - const: verisilicon,dc # DC IPs have discoverable ID/revision registers
+ 
+@@ -53,6 +54,11 @@ properties:
+       - const: axi
+       - const: ahb
+ 
++  power-domains:
++    maxItems: 1
++
++  dma-noncoherent: true
++
+   ports:
+     $ref: /schemas/graph.yaml#/properties/ports
+ 
+@@ -79,6 +85,19 @@ required:
+   - reset-names
+   - ports
+ 
++allOf:
++  - if:
++      properties:
++        compatible:
++          contains:
++            const: starfive,jh7110-dc8200
++    then:
++      required:
++        - resets
++        - reset-names
++        - power-domains
++        - dma-noncoherent
++
+ additionalProperties: false
+ 
+ examples:
+-- 
+2.55.0

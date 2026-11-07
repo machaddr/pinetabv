@@ -1,0 +1,145 @@
+From 5bb66e4cb975103ac5618685e4cc3bf865498e38 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Wed, 26 Aug 2026 12:10:00 +0100
+Subject: [PATCH] media: starfive: enable PineTab-V default camera route
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The video-mux and restored JH7110 CAMSS drivers register their media links
+disabled.  Consequently a normal V4L2 client sees capture nodes but has no
+complete sensor-to-memory pipeline until a media-controller application
+manually configures three links.
+
+Add an optional, generic default-input property to video-mux.  Activate that
+input only after all upstream subdevices are bound, which also keeps the
+driver's active-input state synchronized with the mux hardware.  Retain the
+existing behaviour when the property is absent.
+
+Enable the fixed CSI-to-ISP and ISP-to-YUV capture links in the staging
+StarFive driver, while leaving the raw capture link and camera selector
+mutable.  Select input zero for PineTab-V, matching the schematic's GPIO53-low
+front-facing GC02M2 route.  Userspace remains able to disable that input and
+select the rear OV5640 on input one.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../bindings/media/video-mux.yaml              |  7 ++++++
+ .../dts/starfive/jh7110-pine64-pinetab-v.dtsi |  1 +
+ drivers/media/platform/video-mux.c             | 30 ++++++++++++++++++++++++++
+ .../media/starfive/camss/stf-camss.c           |  6 ++++--
+ 4 files changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/media/video-mux.yaml b/Documentation/devicetree/bindings/media/video-mux.yaml
+--- a/Documentation/devicetree/bindings/media/video-mux.yaml
++++ b/Documentation/devicetree/bindings/media/video-mux.yaml
+@@ -24,5 +24,12 @@ properties:
+   mux-controls:
+     maxItems: 1
+ 
++  default-input:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description:
++      Input port to activate after all upstream subdevices have bound. If this
++      property is absent, all input links remain disabled until userspace
++      selects one.
++
+   '#address-cells':
+     const: 1
+@@ -77,5 +84,6 @@ examples:
+     video-mux {
+         compatible = "video-mux";
+         mux-controls = <&mux>;
++        default-input = <0>;
+         #address-cells = <1>;
+         #size-cells = <0>;
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -106,5 +106,6 @@
+ 	camera_mux: video-mux {
+ 		compatible = "video-mux";
+ 		mux-controls = <&camera_selector>;
++		default-input = <0>;
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+diff --git a/drivers/media/platform/video-mux.c b/drivers/media/platform/video-mux.c
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -29,4 +29,5 @@ struct video_mux {
+ 	struct mux_control *mux;
+ 	struct mutex lock;
+ 	int active;
++	int default_input;
+ };
+@@ -427,6 +428,26 @@ static int video_mux_notify_bound(struct v4l2_async_notifier *notifier,
+ 	return v4l2_create_fwnode_links(sd, &vmux->subdev);
+ }
+ 
++static int video_mux_notify_complete(struct v4l2_async_notifier *notifier)
++{
++	struct video_mux *vmux = notifier_to_video_mux(notifier);
++	struct media_link *link;
++
++	if (vmux->default_input < 0)
++		return 0;
++
++	for_each_media_entity_data_link(&vmux->subdev.entity, link) {
++		if (link->sink != &vmux->pads[vmux->default_input])
++			continue;
++
++		return media_entity_setup_link(link,
++					       link->flags | MEDIA_LNK_FL_ENABLED);
++	}
++
++	return -ENOLINK;
++}
++
+ static const struct v4l2_async_notifier_operations video_mux_notify_ops = {
+ 	.bound = video_mux_notify_bound,
++	.complete = video_mux_notify_complete,
+ };
+@@ -535,6 +556,18 @@ static int video_mux_probe(struct platform_device *pdev)
+ 
+ 	mutex_init(&vmux->lock);
+ 	vmux->active = -1;
++	vmux->default_input = -1;
++	ret = of_property_read_u32(np, "default-input", &i);
++	if (!ret) {
++		if (i >= num_pads - 1)
++			return dev_err_probe(dev, -EINVAL,
++					     "Invalid default input %u\n", i);
++
++		vmux->default_input = i;
++	} else if (ret != -EINVAL) {
++		return dev_err_probe(dev, ret,
++				     "Failed to read default input\n");
++	}
+ 	vmux->pads = devm_kcalloc(dev, num_pads, sizeof(*vmux->pads),
+ 				  GFP_KERNEL);
+ 	if (!vmux->pads)
+diff --git a/drivers/staging/media/starfive/camss/stf-camss.c b/drivers/staging/media/starfive/camss/stf-camss.c
+--- a/drivers/staging/media/starfive/camss/stf-camss.c
++++ b/drivers/staging/media/starfive/camss/stf-camss.c
+@@ -144,5 +144,6 @@ static int stfcamss_register_devs(struct stfcamss *stfcamss)
+ 
+ 	ret = media_create_pad_link(&isp_dev->subdev.entity, STF_ISP_PAD_SRC,
+-				    &cap_yuv->video.vdev.entity, 0, 0);
++				    &cap_yuv->video.vdev.entity, 0,
++				    MEDIA_LNK_FL_ENABLED);
+ 	if (ret)
+ 		goto err_cap_unregister;
+@@ -194,7 +195,8 @@ static int stfcamss_subdev_notifier_bound(struct v4l2_async_notifier *async,
+ 		return -EPERM;
+ 	}
+ 
+-	ret = v4l2_create_fwnode_links_to_pad(subdev, pad, 0);
++	ret = v4l2_create_fwnode_links_to_pad(subdev, pad,
++					       MEDIA_LNK_FL_ENABLED);
+ 	if (ret)
+ 		return ret;
+ 
+-- 
+2.55.0

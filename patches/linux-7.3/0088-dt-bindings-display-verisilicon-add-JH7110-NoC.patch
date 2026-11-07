@@ -1,0 +1,92 @@
+From 5da71819a24a83602dc2af00f1f30bd1a4c7bcf2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 22:15:00 +0100
+Subject: [PATCH] dt-bindings: display: verisilicon: add JH7110 NoC resources
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The JH7110 display controller reaches memory through a dedicated display
+NoC AXI gate and reset.  These are independent of the VOUT-local DC8200
+AXI clock and reset already described by the binding.
+
+Add the JH7110-only clock and reset while preserving the five-clock and
+three-reset layout used by the TH1520 implementation.
+
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/arch/riscv/boot/dts/starfive/jh7110.dtsi
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../bindings/display/verisilicon,dc.yaml       | 24 +++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/display/verisilicon,dc.yaml b/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+--- a/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
++++ b/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+@@ -35,6 +35,7 @@ properties:
+       - description: Pixel clock of output 0
+       - description: Pixel clock of output 1
+       - description: JH7110 LCD output mux clock
++      - description: JH7110 display NoC AXI clock
+ 
+   clock-names:
+     minItems: 5
+@@ -45,18 +46,23 @@ properties:
+       - const: pix0
+       - const: pix1
+       - const: lcd
++      - const: noc
+ 
+   resets:
++    minItems: 3
+     items:
+       - description: DC Core reset
+       - description: DMA AXI bus reset
+       - description: Configuration AHB bus reset
++      - description: JH7110 display NoC AXI reset
+ 
+   reset-names:
++    minItems: 3
+     items:
+       - const: core
+       - const: axi
+       - const: ahb
++      - const: noc
+ 
+   power-domains:
+     maxItems: 1
+@@ -101,11 +107,17 @@ allOf:
+     then:
+       properties:
+         clocks:
+-          minItems: 6
+-          maxItems: 6
++          minItems: 7
++          maxItems: 7
+         clock-names:
+-          minItems: 6
+-          maxItems: 6
++          minItems: 7
++          maxItems: 7
++        resets:
++          minItems: 4
++          maxItems: 4
++        reset-names:
++          minItems: 4
++          maxItems: 4
+       required:
+         - resets
+         - reset-names
+@@ -122,6 +134,10 @@ allOf:
+           maxItems: 5
+         clock-names:
+           maxItems: 5
++        resets:
++          maxItems: 3
++        reset-names:
++          maxItems: 3
+ 
+ additionalProperties: false
+ 
+-- 
+2.55.0

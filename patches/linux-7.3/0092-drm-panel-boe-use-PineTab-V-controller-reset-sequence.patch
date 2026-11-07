@@ -1,0 +1,82 @@
+From 603034635043517cba73fe1ff1a334794f2ca3f4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 23:06:00 +0100
+Subject: [PATCH] drm/panel: boe: use PineTab-V controller reset sequence
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The 2024 PineTab-V revision wires GPIO51 to the active-low reset input of
+the Jadard-controlled display module.  The generic BOE pulse is only a few
+milliseconds long.  On this tablet it can leave the controller responding
+to DCS writes without reliably accepting its initialization table, which
+produces an initialized framebuffer but intermittent visible output.
+
+StarFive's PineTab-V driver uses two full reset pulses and waits 150 ms
+after the final deassertion.  Add a descriptor reset callback and reproduce
+that physical low/high/low/high 100/100/100/150 ms sequence for PineTab-V.
+The generic BOE and Starry sequences remain unchanged.  The callback is
+also harmless on the older PineTab-V revision, where reset-gpios is absent
+and the common helper returns before invoking it.
+
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/drivers/gpu/drm/panel/panel-starfive-jadard.c
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../drm/panel/panel-boe-th101mb31ig002-28a.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -27,6 +27,7 @@ struct panel_desc {
+ 	u32 bus_flags;
+ 	enum mipi_dsi_pixel_format format;
+ 	int (*init)(struct boe_th101mb31ig002 *ctx);
++	void (*reset)(struct boe_th101mb31ig002 *ctx);
+ 	unsigned int lanes;
+ 	bool lp11_before_reset;
+ 	bool lp11_after_enable;
+@@ -53,10 +54,31 @@ struct boe_th101mb31ig002 {
+ 	enum drm_panel_orientation orientation;
+ };
+ 
++static void boe_th101mb31ig002_pinetab_v_reset(struct boe_th101mb31ig002 *ctx)
++{
++	/*
++	 * The PineTab-V drives an active-low RESET input.  Match the
++	 * controller vendor's double-pulse sequence in physical levels:
++	 * low, high, low, high.
++	 */
++	gpiod_set_value_cansleep(ctx->reset, 1);
++	msleep(100);
++	gpiod_set_value_cansleep(ctx->reset, 0);
++	msleep(100);
++	gpiod_set_value_cansleep(ctx->reset, 1);
++	msleep(100);
++	gpiod_set_value_cansleep(ctx->reset, 0);
++	msleep(150);
++}
++
+ static void boe_th101mb31ig002_reset(struct boe_th101mb31ig002 *ctx)
+ {
+ 	if (!ctx->reset)
+ 		return;
++	if (ctx->desc->reset) {
++		ctx->desc->reset(ctx);
++		return;
++	}
+ 
+ 	gpiod_direction_output(ctx->reset, 0);
+ 	usleep_range(10, 100);
+@@ -339,6 +361,7 @@ static const struct panel_desc pinetab_v_desc = {
+ 		      MIPI_DSI_MODE_LPM,
+ 	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
+ 	.init = boe_th101mb31ig002_enable,
++	.reset = boe_th101mb31ig002_pinetab_v_reset,
+ 	.init_to_exit_sleep_delay_ms = 120,
+ 	.enable_to_reset_delay_ms = 250,
+ 	.lp11_after_enable = true,
+-- 
+2.55.0

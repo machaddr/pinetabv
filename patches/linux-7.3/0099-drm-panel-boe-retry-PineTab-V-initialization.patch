@@ -1,0 +1,80 @@
+From 2824506eb07392276ee7f864159d16b3dbbbd962 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 14:41:00 +0100
+Subject: [PATCH] drm/panel: boe: retry PineTab-V initialization
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A transient DSI transfer failure while the PineTab-V Jadard controller
+comes out of reset aborts the complete initialization table.  The panel
+bridge cannot propagate that failure to the atomic commit, leaving an
+enabled backlight with no image.
+
+Add descriptor-controlled initialization retries.  Repeat the complete
+hardware reset and command table after a transport failure, and report each
+retry and the final failure.  Enable two retries only for PineTab-V; all
+other panels retain their single initialization attempt.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../drm/panel/panel-boe-th101mb31ig002-28a.c | 24 +++++++++++++++-----
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -38,4 +38,5 @@ struct panel_desc {
+ 	unsigned int enter_sleep_to_reset_down_delay_ms;
+ 	unsigned int power_off_delay_ms;
++	unsigned int init_retries;
+ 	bool keep_powered_without_reset;
+ };
+@@ -250,6 +251,7 @@ static int boe_th101mb31ig002_prepare(struct drm_panel *panel)
+ 						      panel);
+ 	struct device *dev = &ctx->dsi->dev;
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
++	unsigned int attempt;
+ 	int ret;
+ 
+ 	if (!ctx->powered) {
+@@ -299,13 +301,24 @@ static int boe_th101mb31ig002_prepare(struct drm_panel *panel)
+ 			msleep(ctx->desc->lp11_to_reset_delay_ms);
+ 	}
+ 
+-	boe_th101mb31ig002_reset(ctx);
++	for (attempt = 0; attempt <= ctx->desc->init_retries; attempt++) {
++		boe_th101mb31ig002_reset(ctx);
+ 
+-	ret = ctx->desc->init(ctx);
+-	if (ret)
+-		return ret;
++		ret = ctx->desc->init(ctx);
++		if (!ret)
++			return 0;
+ 
+-	return 0;
++		if (attempt == ctx->desc->init_retries)
++			break;
++
++		dev_warn(dev,
++			 "panel initialization attempt %u failed: %d, retrying\n",
++			 attempt + 1, ret);
++		msleep(20);
++	}
++
++	dev_err(dev, "panel initialization failed: %d\n", ret);
++	return ret;
+ }
+ 
+ static const struct drm_display_mode boe_th101mb31ig002_default_mode = {
+@@ -369,5 +386,6 @@ static const struct panel_desc pinetab_v_desc = {
+ 	.enable_to_reset_delay_ms = 250,
+ 	.lp11_after_enable = true,
+ 	.lp11_to_reset_delay_ms = 5,
++	.init_retries = 2,
+ 	.keep_powered_without_reset = true,
+ };
+-- 
+2.55.0

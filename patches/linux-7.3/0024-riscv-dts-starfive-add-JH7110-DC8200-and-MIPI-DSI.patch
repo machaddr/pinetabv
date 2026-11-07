@@ -1,0 +1,117 @@
+From f57ad0185acf53724c17e1f747d68a94d32999c1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 16:45:01 +0100
+Subject: [PATCH 24/53] riscv: dts: starfive: add JH7110 DC8200 and MIPI DSI
+
+Add disabled-by-default nodes for the generic Verisilicon DC8200
+controller, Cadence DSI host, and upstream JH7110 D-PHY TX. The graph
+ports allow boards to opt into either display output while retaining the
+Linux 7.3 display-controller implementation.
+
+Assisted-by: Codex:gpt-5
+---
+ arch/riscv/boot/dts/starfive/jh7110.dtsi | 81 ++++++++++++++++++++++++
+ 1 file changed, 81 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index b3a2bb959472d..9b1f14d02e02f 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1219,6 +1219,39 @@ csi_phy: phy@19820000 {
+ 			#phy-cells = <0>;
+ 		};
+ 
++		dc8200: display@29400000 {
++			compatible = "starfive,jh7110-dc8200", "verisilicon,dc";
++			reg = <0x0 0x29400000 0x0 0x2800>;
++			interrupts = <95>;
++			dma-noncoherent;
++
++			clocks = <&voutcrg JH7110_VOUTCLK_DC8200_CORE>,
++				 <&voutcrg JH7110_VOUTCLK_DC8200_AXI>,
++				 <&voutcrg JH7110_VOUTCLK_DC8200_AHB>,
++				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX0>,
++				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX1>;
++			clock-names = "core", "axi", "ahb", "pix0", "pix1";
++			resets = <&voutcrg JH7110_VOUTRST_DC8200_CORE>,
++				 <&voutcrg JH7110_VOUTRST_DC8200_AXI>,
++				 <&voutcrg JH7110_VOUTRST_DC8200_AHB>;
++			reset-names = "core", "axi", "ahb";
++			power-domains = <&pwrc JH7110_PD_VOUT>;
++			status = "disabled";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				dc_out0: port@0 {
++					reg = <0>;
++				};
++
++				dc_out1: port@1 {
++					reg = <1>;
++				};
++			};
++		};
++
+ 		voutcrg: clock-controller@295c0000 {
+ 			compatible = "starfive,jh7110-voutcrg";
+ 			reg = <0x0 0x295c0000 0x0 0x10000>;
+@@ -1237,6 +1270,54 @@ voutcrg: clock-controller@295c0000 {
+ 			power-domains = <&pwrc JH7110_PD_VOUT>;
+ 		};
+ 
++		mipi_dsi: dsi@295d0000 {
++			compatible = "starfive,jh7110-dsi";
++			reg = <0x0 0x295d0000 0x0 0x10000>;
++			interrupts = <98>;
++			clocks = <&voutcrg JH7110_VOUTCLK_DSITX_APB>,
++				 <&voutcrg JH7110_VOUTCLK_DSITX_SYS>,
++				 <&voutcrg JH7110_VOUTCLK_DSITX_DPI>,
++				 <&voutcrg JH7110_VOUTCLK_DSITX_TXESC>;
++			clock-names = "dsi_p_clk", "dsi_sys_clk", "dpi", "txesc";
++			resets = <&voutcrg JH7110_VOUTRST_DSITX_APB>,
++				 <&voutcrg JH7110_VOUTRST_DSITX_SYS>,
++				 <&voutcrg JH7110_VOUTRST_DSITX_DPI>,
++				 <&voutcrg JH7110_VOUTRST_DSITX_TXESC>,
++				 <&voutcrg JH7110_VOUTRST_DSITX_TXBYTEHS>;
++			reset-names = "dsi_p_rst", "sys", "dpi", "txesc", "txbytehs";
++			phys = <&mipi_dphy>;
++			phy-names = "dphy";
++			power-domains = <&pwrc JH7110_PD_VOUT>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				dsi_out: port@0 {
++					reg = <0>;
++				};
++
++				dsi_in: port@1 {
++					reg = <1>;
++				};
++			};
++		};
++
++		mipi_dphy: phy@295e0000 {
++			compatible = "starfive,jh7110-dphy-tx";
++			reg = <0x0 0x295e0000 0x0 0x10000>;
++			clocks = <&voutcrg JH7110_VOUTCLK_MIPITX_DPHY_TXESC>;
++			clock-names = "txesc";
++			resets = <&voutcrg JH7110_VOUTRST_MIPITX_DPHY_SYS>;
++			reset-names = "sys";
++			power-domains = <&pwrc JH7110_PD_VOUT>;
++			#phy-cells = <0>;
++			status = "disabled";
++		};
++
+ 		pcie0: pcie@940000000 {
+ 			compatible = "starfive,jh7110-pcie";
+ 			reg = <0x9 0x40000000 0x0 0x1000000>,
+-- 
+2.55.0
+

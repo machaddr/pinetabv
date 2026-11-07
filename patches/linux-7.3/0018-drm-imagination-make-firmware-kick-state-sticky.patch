@@ -1,0 +1,136 @@
+From e973c60e9ff32a9855dd9c852ace6bdf12043285 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:56:31 +0100
+Subject: [PATCH 18/53] drm/imagination: make firmware kick state sticky
+
+The downstream cleanup workarounds only need to know whether a queue or
+free list was ever exposed to firmware. They use zero-initialized atomic
+counters that increment for every kick and never decrement. A long runtime
+can overflow them back to zero and incorrectly skip firmware cleanup.
+
+Represent both lifetime states explicitly: initialize them, set them to one
+when any kick is sent, and test them as booleans during final release.
+Concurrent kick paths remain race-safe, without unbounded arithmetic.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_free_list.c | 3 ++-
+ drivers/gpu/drm/imagination/pvr_free_list.h | 4 +++-
+ drivers/gpu/drm/imagination/pvr_hwrt.h      | 2 +-
+ drivers/gpu/drm/imagination/pvr_queue.c     | 9 +++++----
+ drivers/gpu/drm/imagination/pvr_queue.h     | 3 ++-
+ 5 files changed, 13 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_free_list.c b/drivers/gpu/drm/imagination/pvr_free_list.c
+index 9e818465e2eaefc995f6433c0351a3c533976a96..f97a6d30887d8765583e55cf7c16fcb15878ad9b 100644
+--- a/drivers/gpu/drm/imagination/pvr_free_list.c
++++ b/drivers/gpu/drm/imagination/pvr_free_list.c
+@@ -422,6 +422,7 @@ pvr_free_list_create(struct pvr_file *pvr_file,
+ 		return ERR_PTR(-ENOMEM);
+ 
+ 	kref_init(&free_list->ref_count);
++	atomic_set(&free_list->was_kicked, 0);
+ 	INIT_LIST_HEAD(&free_list->mem_block_list);
+ 	INIT_LIST_HEAD(&free_list->hwrt_list);
+ 	mutex_init(&free_list->lock);
+@@ -477,7 +478,7 @@ pvr_free_list_release(struct kref *ref_count)
+ 
+ 	xa_erase(&free_list->pvr_dev->free_list_ids, free_list->fw_id);
+ 
+-	if (atomic_read(&free_list->kicks_referenced) == 0) {
++	if (!atomic_read(&free_list->was_kicked)) {
+ 		err = 0;
+ 	} else {
+ 		err = pvr_fw_structure_cleanup(free_list->pvr_dev,
+diff --git a/drivers/gpu/drm/imagination/pvr_free_list.h b/drivers/gpu/drm/imagination/pvr_free_list.h
+index 633cc99d6ac8969010c4b2d050bcee073f980414..dfa961b8095303a2b65c346c1a0ecadac0cffef5 100644
+--- a/drivers/gpu/drm/imagination/pvr_free_list.h
++++ b/drivers/gpu/drm/imagination/pvr_free_list.h
+@@ -4,6 +4,7 @@
+ #ifndef PVR_FREE_LIST_H
+ #define PVR_FREE_LIST_H
+ 
++#include <linux/atomic.h>
+ #include <linux/compiler_attributes.h>
+ #include <linux/kref.h>
+ #include <linux/list.h>
+@@ -96,7 +97,8 @@ struct pvr_free_list {
+ 	/** @hwrt_list: List of HWRTs using this free list. */
+ 	struct list_head hwrt_list;
+ 
+-	atomic_t kicks_referenced;
++	/** @was_kicked: Whether this free list has ever been exposed to firmware. */
++	atomic_t was_kicked;
+ 
+ 	/** @initial_num_pages: Initial number of pages in free list. */
+ 	u32 initial_num_pages;
+diff --git a/drivers/gpu/drm/imagination/pvr_hwrt.h b/drivers/gpu/drm/imagination/pvr_hwrt.h
+index 3a9b71693226bb498d8e82df5b62523402df46e9..d806275a83319a8b29f6a8d627111cfb47d763b6 100644
+--- a/drivers/gpu/drm/imagination/pvr_hwrt.h
++++ b/drivers/gpu/drm/imagination/pvr_hwrt.h
+@@ -172,7 +172,7 @@ pvr_hwrt_mark_free_lists_kicked(struct pvr_hwrt_data *hwrt)
+ 		struct pvr_free_list *fl = hwrt->hwrt_dataset->free_lists[i];
+ 
+ 		if (fl)
+-			atomic_inc(&fl->kicks_referenced);
++			atomic_set(&fl->was_kicked, 1);
+ 	}
+ }
+ 
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.c b/drivers/gpu/drm/imagination/pvr_queue.c
+index 2a5b821e7b24cb49d68ec38d3aa634c31555bcc8..327bc71950f64eb9f4ba9606cd350c6e25df01b8 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.c
++++ b/drivers/gpu/drm/imagination/pvr_queue.c
+@@ -805,8 +805,8 @@ static struct dma_fence *pvr_queue_run_job(struct drm_sched_job *sched_job)
+ 						 job->hwrt,
+ 						 frag_job->fw_ccb_cmd_type ==
+ 						 ROGUE_FWIF_CCB_CMD_TYPE_FRAG_PR);
+-		atomic_inc(&geom_queue->kicks_sent);
+-		atomic_inc(&frag_queue->kicks_sent);
++		atomic_set(&geom_queue->was_kicked, 1);
++		atomic_set(&frag_queue->was_kicked, 1);
+ 		pvr_hwrt_mark_free_lists_kicked(job->hwrt);
+ 
+ 		trace_pvr_job_submit_fw(geom_job);
+@@ -818,7 +818,7 @@ static struct dma_fence *pvr_queue_run_job(struct drm_sched_job *sched_job)
+ 		pvr_cccb_send_kccb_kick(pvr_dev, &queue->cccb,
+ 					pvr_context_get_fw_addr(job->ctx) + queue->ctx_offset,
+ 					job->hwrt);
+-		atomic_inc(&queue->kicks_sent);
++		atomic_set(&queue->was_kicked, 1);
+ 		pvr_hwrt_mark_free_lists_kicked(job->hwrt);
+ 
+ 		trace_pvr_job_submit_fw(job);
+@@ -1130,7 +1130,7 @@ static int pvr_queue_cleanup_fw_context(struct pvr_queue *queue)
+ 	if (!queue->ctx->fw_obj)
+ 		return 0;
+ 
+-	if (atomic_read(&queue->kicks_sent) == 0)
++	if (!atomic_read(&queue->was_kicked))
+ 		return 0;
+ 
+ 	return pvr_fw_structure_cleanup(queue->ctx->pvr_dev,
+@@ -1344,6 +1344,7 @@ struct pvr_queue *pvr_queue_create(struct pvr_context *ctx,
+ 	queue->ctx_offset = get_ctx_offset(type);
+ 	queue->ctx = ctx;
+ 	queue->callstack_addr = args->callstack_addr;
++	atomic_set(&queue->was_kicked, 0);
+ 	sched = &queue->scheduler;
+ 	INIT_LIST_HEAD(&queue->node);
+ 	mutex_init(&queue->cccb_fence_ctx.job_lock);
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.h b/drivers/gpu/drm/imagination/pvr_queue.h
+index 8153e4c9c87628d7c3f96e2a3d512e04feec49c0..ff3a167e343bd4fe599126f01112aac1fe6c96e9 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.h
++++ b/drivers/gpu/drm/imagination/pvr_queue.h
+@@ -96,7 +96,8 @@ struct pvr_queue {
+ 	 */
+ 	atomic_t in_flight_job_count;
+ 
+-	atomic_t kicks_sent;
++	/** @was_kicked: Whether this queue has ever been exposed to firmware. */
++	atomic_t was_kicked;
+ 
+ 	/**
+ 	 * @cccb_fence_ctx: CCCB fence context.
+-- 
+2.53.0

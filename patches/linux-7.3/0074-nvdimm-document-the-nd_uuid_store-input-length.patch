@@ -1,0 +1,30 @@
+From 4dd2bcdf3667b8415d7e7edecf06f9afd1fdf2a0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 16:54:16 +0100
+Subject: [PATCH 74/77] nvdimm: document the nd_uuid_store() input length
+
+Describe the len argument so the function kernel-doc covers every
+parameter.
+
+No functional change.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/nvdimm/core.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/nvdimm/core.c b/drivers/nvdimm/core.c
+index 34bd886c04a6d..7144b0227a01b 100644
+--- a/drivers/nvdimm/core.c
++++ b/drivers/nvdimm/core.c
+@@ -210,6 +210,7 @@ EXPORT_SYMBOL_GPL(to_nvdimm_bus_dev);
+  * @dev: container device for the uuid property
+  * @uuid_out: uuid buffer to replace
+  * @buf: raw sysfs buffer to parse
++ * @len: length of @buf
+  *
+  * Enforce that uuids can only be changed while the device is disabled
+  * (driver detached)
+-- 
+2.55.0
+

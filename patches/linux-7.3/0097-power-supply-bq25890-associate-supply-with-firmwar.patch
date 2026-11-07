@@ -1,0 +1,40 @@
+From 61384333a80db31f92d3fdfe60aed3eb22c25cdb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 14:36:00 +0100
+Subject: [PATCH] power: supply: bq25890: associate supply with firmware node
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Consumers can use the power-supplies property to refer to a charger by its
+firmware node.  The bq25890 driver registers its power_supply without that
+node, so power_supply_find_supply_from_fwnode() cannot match the reference
+and consumers defer forever.
+
+Associate the registered supply with the charger device firmware node.  The
+PineTab-V CW2015 gauge can then resolve its SC89890H charger, report the
+charging state, and preserve the firmware relationship.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/power/supply/bq25890_charger.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/power/supply/bq25890_charger.c b/drivers/power/supply/bq25890_charger.c
+--- a/drivers/power/supply/bq25890_charger.c
++++ b/drivers/power/supply/bq25890_charger.c
+@@ -1125,7 +1125,10 @@ static const struct power_supply_desc bq25890_power_supply_desc = {
+ 
+ static int bq25890_power_supply_init(struct bq25890_device *bq)
+ {
+-	struct power_supply_config psy_cfg = { .drv_data = bq, };
++	struct power_supply_config psy_cfg = {
++		.drv_data = bq,
++		.fwnode = dev_fwnode(bq->dev),
++	};
+ 
+ 	/* Get ID for the device */
+ 	mutex_lock(&bq25890_id_mutex);
+-- 
+2.55.0

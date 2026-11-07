@@ -1,0 +1,507 @@
+From: Codex <noreply@openai.com>
+Date: Sat, 24 Oct 2026 09:45:00 +0100
+Subject: [PATCH] media: starfive: fix PineTab-V camera startup and stream lifetime
+
+The async framework completes only the root notifier. Select video-mux's
+firmware default when the matching sensor binds, then initialize the entire
+enabled pipeline from the sensor in the CAMSS root completion callback.
+Initialize capture sizes from their actual source formats as well.
+
+Linux 7.3 CSI2RX uses the stream-aware API. Call its helpers with
+the firmware-selected source pad for both raw and ISP capture so either
+PineTab-V sensor can start through the mux with the selected lane map.
+
+Program raw DMA addresses before enabling the writer, stop DMA and drain
+interrupt handlers before returning buffers, and unwind capture startup if
+the source fails. Reapply the startup frame skip on every capture. Match
+NV12 buffer stride and chroma alignment to the ISP hardware. Bound GC02M2
+blanking controls to its 14-bit timing registers and reject active format
+changes during capture.
+
+The board GPIOs and lane maps are unchanged; they match the PineTab-V
+revision-1 and revision-2 camera switch wiring.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Link: https://docs.kernel.org/driver-api/media/v4l2-async.html
+Assisted-by: Codex (OpenAI)
+---
+
+diff --git a/drivers/media/i2c/gc02m2.c b/drivers/media/i2c/gc02m2.c
+--- a/drivers/media/i2c/gc02m2.c
++++ b/drivers/media/i2c/gc02m2.c
+@@ -42,7 +42,7 @@
+ #define GC02M2_REG_EXPOSURE_L 0x04
+ #define GC02M2_EXPOSURE_MIN 4
+ #define GC02M2_EXPOSURE_STEP 1
+-#define GC02M2_VTS_MAX 0x7fff
++#define GC02M2_VTS_MAX 0x3fff
+ 
+ #define GC02M2_ANALOG_GAIN_REG 0xb6
+ #define GC02M2_PREGAIN_H_REG 0xb1
+@@ -429,6 +429,9 @@
+ 	const struct gc02m2_mode *mode = &supported_modes[0];
+ 	s64 h_blank, vblank_def;
+ 
++	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE && gc02m2->streaming)
++		return -EBUSY;
++
+ 	fmt->format.code = mode->bus_fmt;
+ 	fmt->format.width = mode->width;
+ 	fmt->format.height = mode->height;
+diff --git a/drivers/media/platform/cadence/cdns-csi2rx.c b/drivers/media/platform/cadence/cdns-csi2rx.c
+--- a/drivers/media/platform/cadence/cdns-csi2rx.c
++++ b/drivers/media/platform/cadence/cdns-csi2rx.c
+@@ -846,10 +846,6 @@
+ {
+ 	struct v4l2_subdev *subdev = notifier->sd;
+ 	struct csi2rx_priv *csi2rx = v4l2_subdev_to_csi2rx(subdev);
+-	struct v4l2_subdev_format format = {
+-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+-	};
+-	int ret;
+ 
+ 	csi2rx->source_pad = media_entity_get_fwnode_pad(&s_subdev->entity,
+ 							 asd->match.fwnode,
+@@ -864,16 +860,6 @@
+ 
+ 	dev_dbg(csi2rx->dev, "Bound %s pad: %d\n", s_subdev->name,
+ 		csi2rx->source_pad);
+-
+-	format.pad = csi2rx->source_pad;
+-	ret = v4l2_subdev_call_state_active(s_subdev, pad, get_fmt, &format);
+-	if (ret)
+-		return ret;
+-
+-	format.pad = CSI2RX_PAD_SINK;
+-	ret = v4l2_subdev_call_state_active(subdev, pad, set_fmt, &format);
+-	if (ret)
+-		return ret;
+ 
+ 	return media_create_pad_link(&csi2rx->source_subdev->entity,
+ 				     csi2rx->source_pad,
+diff --git a/drivers/media/platform/video-mux.c b/drivers/media/platform/video-mux.c
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -424,13 +424,6 @@
+ 				  struct v4l2_async_connection *asd)
+ {
+ 	struct video_mux *vmux = notifier_to_video_mux(notifier);
+-
+-	return v4l2_create_fwnode_links(sd, &vmux->subdev);
+-}
+-
+-static int video_mux_notify_complete(struct v4l2_async_notifier *notifier)
+-{
+-	struct video_mux *vmux = notifier_to_video_mux(notifier);
+ 	struct v4l2_subdev_format format = {
+ 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+ 	};
+@@ -438,11 +431,16 @@
+ 	struct media_link *link;
+ 	int ret;
+ 
++	ret = v4l2_create_fwnode_links(sd, &vmux->subdev);
++	if (ret)
++		return ret;
++
+ 	if (vmux->default_input < 0)
+ 		return 0;
+ 
+ 	for_each_media_entity_data_link(&vmux->subdev.entity, link) {
+-		if (link->sink != &vmux->pads[vmux->default_input])
++		if (link->source->entity != &sd->entity ||
++		    link->sink != &vmux->pads[vmux->default_input])
+ 			continue;
+ 
+ 		if (!is_media_entity_v4l2_subdev(link->source->entity))
+@@ -465,12 +463,12 @@
+ 					       link->flags | MEDIA_LNK_FL_ENABLED);
+ 	}
+ 
+-	return -ENOLINK;
++	/* The default input may bind after the other sensor. */
++	return 0;
+ }
+ 
+ static const struct v4l2_async_notifier_operations video_mux_notify_ops = {
+ 	.bound = video_mux_notify_bound,
+-	.complete = video_mux_notify_complete,
+ };
+ 
+ static int video_mux_async_register(struct video_mux *vmux,
+diff --git a/drivers/staging/media/starfive/camss/stf-camss.c b/drivers/staging/media/starfive/camss/stf-camss.c
+--- a/drivers/staging/media/starfive/camss/stf-camss.c
++++ b/drivers/staging/media/starfive/camss/stf-camss.c
+@@ -150,6 +150,7 @@
+ 		goto err_cap_unregister;
+ 
+ 	cap_yuv->video.source_subdev = &isp_dev->subdev;
++	cap_yuv->video.source_pad = STF_ISP_PAD_SRC;
+ 
+ 	return ret;
+ 
+@@ -184,9 +185,6 @@
+ 	enum stf_port_num port = csd->port;
+ 	struct stf_isp_dev *isp_dev = &stfcamss->isp_dev;
+ 	struct stf_capture *cap_raw = &stfcamss->captures[STF_CAPTURE_RAW];
+-	struct v4l2_subdev_format format = {
+-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+-	};
+ 	struct media_pad *pad;
+ 	int source_pad;
+ 	int ret;
+@@ -209,24 +207,53 @@
+ 	if (source_pad < 0)
+ 		return source_pad;
+ 
+-	format.pad = source_pad;
+-	ret = v4l2_subdev_call_state_active(subdev, pad, get_fmt, &format);
+-	if (ret)
+-		return ret;
+-
+-	format.pad = STF_ISP_PAD_SINK;
+-	ret = v4l2_subdev_call_state_active(&isp_dev->subdev, pad, set_fmt,
+-					    &format);
+-	if (ret)
+-		return ret;
+-
+ 	ret = media_create_pad_link(&subdev->entity, source_pad,
+ 				    &cap_raw->video.vdev.entity, 0, 0);
+ 	if (ret)
+ 		return ret;
+ 
+ 	isp_dev->source_subdev = subdev;
++	isp_dev->source_pad = source_pad;
+ 	cap_raw->video.source_subdev = subdev;
++	cap_raw->video.source_pad = source_pad;
++
++	return 0;
++}
++
++/* Initialize from the sensor only after all nested notifiers have bound. */
++static int stfcamss_init_pipeline_formats(struct v4l2_subdev *sd)
++{
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	struct v4l2_subdev *upstream;
++	struct media_pad *pad, *remote;
++	int ret;
++
++	media_entity_for_each_pad(&sd->entity, pad) {
++		if (!(pad->flags & MEDIA_PAD_FL_SINK))
++			continue;
++
++		remote = media_pad_remote_pad_first(pad);
++		if (!remote || !is_media_entity_v4l2_subdev(remote->entity))
++			continue;
++
++		upstream = media_entity_to_v4l2_subdev(remote->entity);
++		ret = stfcamss_init_pipeline_formats(upstream);
++		if (ret)
++			return ret;
++
++		format.pad = remote->index;
++		ret = v4l2_subdev_call_state_active(upstream, pad, get_fmt,
++						    &format);
++		if (ret)
++			return ret;
++
++		format.pad = pad->index;
++		ret = v4l2_subdev_call_state_active(sd, pad, set_fmt, &format);
++		if (ret)
++			return ret;
++	}
+ 
+ 	return 0;
+ }
+@@ -235,6 +262,32 @@
+ {
+ 	struct stfcamss *stfcamss =
+ 		container_of(ntf, struct stfcamss, notifier);
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	unsigned int i;
++	int ret;
++
++	ret = stfcamss_init_pipeline_formats(&stfcamss->isp_dev.subdev);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < STF_CAPTURE_NUM; i++) {
++		struct stfcamss_video *video = &stfcamss->captures[i].video;
++
++		if (!video->source_subdev)
++			return -ENOLINK;
++
++		format.pad = video->source_pad;
++		ret = v4l2_subdev_call_state_active(video->source_subdev, pad,
++						    get_fmt, &format);
++		if (ret)
++			return ret;
++
++		ret = stf_video_init_format(video, &format.format);
++		if (ret)
++			return ret;
++	}
+ 
+ 	return v4l2_device_register_subdev_nodes(&stfcamss->v4l2_dev);
+ }
+@@ -282,6 +335,7 @@
+ 		if (irq < 0)
+ 			return irq;
+ 
++		stfcamss->irq[i] = irq;
+ 		ret = devm_request_irq(stfcamss->dev, irq, stf_isrs[i].isr, 0,
+ 				       stf_isrs[i].name, stfcamss);
+ 		if (ret) {
+diff --git a/drivers/staging/media/starfive/camss/stf-camss.h b/drivers/staging/media/starfive/camss/stf-camss.h
+--- a/drivers/staging/media/starfive/camss/stf-camss.h
++++ b/drivers/staging/media/starfive/camss/stf-camss.h
+@@ -52,6 +52,7 @@
+ 	struct media_device media_dev;
+ 	struct media_pipeline pipe;
+ 	struct device *dev;
++	int irq[3];
+ 	struct stf_isp_dev isp_dev;
+ 	struct stf_capture captures[STF_CAPTURE_NUM];
+ 	struct v4l2_async_notifier notifier;
+diff --git a/drivers/staging/media/starfive/camss/stf-capture.c b/drivers/staging/media/starfive/camss/stf-capture.c
+--- a/drivers/staging/media/starfive/camss/stf-capture.c
++++ b/drivers/staging/media/starfive/camss/stf-capture.c
+@@ -248,23 +248,44 @@
+ {
+ 	struct stf_capture *cap = to_stf_capture(video);
+ 
++	atomic_set(&cap->buffers.frame_skip, 4);
+ 	stf_channel_set(video);
++	stf_cap_s_cfg(video);
+ 	if (cap->type == STF_CAPTURE_RAW) {
+ 		stf_wr_irq_enable(video);
+ 		stf_wr_data_en(video);
+ 	}
+ 
+-	stf_cap_s_cfg(video);
+ }
+ 
+ static void stf_capture_stop(struct stfcamss_video *video)
+ {
+ 	struct stf_capture *cap = to_stf_capture(video);
+-
+-	if (cap->type == STF_CAPTURE_RAW)
++	struct stfcamss *stfcamss = video->stfcamss;
++
++	/* An ISR may write back a saved ISP_CTRL value with DMA still enabled. */
++	if (cap->type == STF_CAPTURE_RAW) {
++		disable_irq(stfcamss->irq[0]);
++		stf_syscon_reg_clear_bit(stfcamss, VIN_CHANNEL_SEL_EN,
++					 U0_VIN_AXIWR0_EN);
+ 		stf_wr_irq_disable(video);
++	} else {
++		disable_irq(stfcamss->irq[1]);
++		disable_irq(stfcamss->irq[2]);
++		stf_isp_reg_set_bit(stfcamss, ISP_REG_CSI_INPUT_EN_AND_STATUS,
++				    CSI_EN_S, 0);
++		stf_isp_reg_set_bit(stfcamss, ISP_REG_ISP_CTRL_0,
++				    ISPC_ENUO | ISPC_ENLS | ISPC_EN, 0);
++	}
+ 
+ 	stf_cap_s_cleanup(video);
++
++	if (cap->type == STF_CAPTURE_RAW) {
++		enable_irq(stfcamss->irq[0]);
++	} else {
++		enable_irq(stfcamss->irq[2]);
++		enable_irq(stfcamss->irq[1]);
++	}
+ }
+ 
+ static void stf_capture_init(struct stfcamss *stfcamss, struct stf_capture *cap)
+@@ -289,7 +310,7 @@
+ 	} else if (cap->type == STF_CAPTURE_YUV) {
+ 		cap->video.formats = stf_isp_fmts;
+ 		cap->video.nformats = ARRAY_SIZE(stf_isp_fmts);
+-		cap->video.bpl_alignment = 1;
++		cap->video.bpl_alignment = STFCAMSS_FRAME_WIDTH_ALIGN_8;
+ 	}
+ }
+ 
+diff --git a/drivers/staging/media/starfive/camss/stf-isp.c b/drivers/staging/media/starfive/camss/stf-isp.c
+--- a/drivers/staging/media/starfive/camss/stf-isp.c
++++ b/drivers/staging/media/starfive/camss/stf-isp.c
+@@ -67,6 +67,9 @@
+ 	struct v4l2_rect *crop;
+ 	int ret;
+ 
++	if (!isp_dev->source_subdev)
++		return -ENOLINK;
++
+ 	sd_state = v4l2_subdev_lock_and_get_active_state(sd);
+ 	fmt = v4l2_subdev_state_get_format(sd_state, STF_ISP_PAD_SINK);
+ 	crop = v4l2_subdev_state_get_crop(sd_state, STF_ISP_PAD_SRC);
+@@ -78,7 +81,20 @@
+ 		stf_isp_stream_set(isp_dev);
+ 	}
+ 
+-	ret = v4l2_subdev_call(isp_dev->source_subdev, video, s_stream, enable);
++	if (enable)
++		ret = v4l2_subdev_enable_streams(isp_dev->source_subdev,
++						 isp_dev->source_pad, BIT_ULL(0));
++	else
++		ret = v4l2_subdev_disable_streams(isp_dev->source_subdev,
++						  isp_dev->source_pad, BIT_ULL(0));
++
++	/* Quiesce ISP DMA on STREAMOFF and on an upstream start failure. */
++	if (!enable || ret) {
++		stf_isp_reg_set_bit(isp_dev->stfcamss,
++				    ISP_REG_CSI_INPUT_EN_AND_STATUS, CSI_EN_S, 0);
++		stf_isp_reg_set_bit(isp_dev->stfcamss, ISP_REG_ISP_CTRL_0,
++				    ISPC_ENUO | ISPC_ENLS | ISPC_EN, 0);
++	}
+ 
+ 	v4l2_subdev_unlock_state(sd_state);
+ 
+@@ -103,6 +119,7 @@
+ 			     STFCAMSS_FRAME_MAX_WIDTH);
+ 	fmt->height = clamp_t(u32, fmt->height, STFCAMSS_FRAME_MIN_HEIGHT,
+ 			      STFCAMSS_FRAME_MAX_HEIGHT);
++	fmt->width &= ~0x1;
+ 	fmt->height &= ~0x1;
+ 	fmt->field = V4L2_FIELD_NONE;
+ 	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+@@ -197,6 +214,10 @@
+ 		.top = 0,
+ 	};
+ 
++	crop->left &= ~1;
++	crop->top &= ~1;
++	crop->width &= ~1;
++	crop->height &= ~1;
+ 	v4l2_rect_set_min_size(crop, &stf_frame_min_crop);
+ 	v4l2_rect_map_inside(crop, &bounds);
+ }
+diff --git a/drivers/staging/media/starfive/camss/stf-isp.h b/drivers/staging/media/starfive/camss/stf-isp.h
+--- a/drivers/staging/media/starfive/camss/stf-isp.h
++++ b/drivers/staging/media/starfive/camss/stf-isp.h
+@@ -413,6 +413,7 @@
+ 	const struct stf_isp_format_table *formats;
+ 	unsigned int nformats;
+ 	struct v4l2_subdev *source_subdev;
++	unsigned int source_pad;
+ 	const struct stf_isp_format *current_fmt;
+ };
+ 
+diff --git a/drivers/staging/media/starfive/camss/stf-video.c b/drivers/staging/media/starfive/camss/stf-video.c
+--- a/drivers/staging/media/starfive/camss/stf-video.c
++++ b/drivers/staging/media/starfive/camss/stf-video.c
+@@ -83,6 +83,10 @@
+ 			     STFCAMSS_FRAME_MAX_WIDTH);
+ 	pix->height = clamp_t(u32, height, STFCAMSS_FRAME_MIN_HEIGHT,
+ 			      STFCAMSS_FRAME_MAX_HEIGHT);
++	if (pix->pixelformat == V4L2_PIX_FMT_NV12) {
++		pix->width &= ~1;
++		pix->height &= ~1;
++	}
+ 	bpl = pix->width * fi->bpp / 8;
+ 	bpl = ALIGN(bpl, video->bpl_alignment);
+ 	pix->bytesperline = bpl;
+@@ -103,7 +107,8 @@
+ 	return 0;
+ }
+ 
+-static int stf_video_init_format(struct stfcamss_video *video)
++int stf_video_init_format(struct stfcamss_video *video,
++			  const struct v4l2_mbus_framefmt *mbus_fmt)
+ {
+ 	int ret;
+ 	struct v4l2_format format = {
+@@ -115,6 +120,18 @@
+ 		},
+ 	};
+ 
++	if (mbus_fmt) {
++		const struct stfcamss_format_info *fi;
++
++		fi = video_g_fi_by_mcode(video, mbus_fmt->code);
++		if (!fi)
++			return -EINVAL;
++
++		format.fmt.pix.width = mbus_fmt->width;
++		format.fmt.pix.height = mbus_fmt->height;
++		format.fmt.pix.pixelformat = fi->pixelformat;
++	}
++
+ 	ret = __video_try_fmt(video, &format);
+ 
+ 	if (ret < 0)
+@@ -272,6 +289,11 @@
+ 	struct video_device *vdev = &video->vdev;
+ 	int ret;
+ 
++	if (!video->source_subdev) {
++		ret = -ENOLINK;
++		goto err_ret_buffers;
++	}
++
+ 	ret = video_device_pipeline_start(vdev, &video->stfcamss->pipe);
+ 	if (ret < 0) {
+ 		dev_err(video->stfcamss->dev,
+@@ -287,7 +309,8 @@
+ 
+ 	video->ops->start_streaming(video);
+ 
+-	ret = v4l2_subdev_call(video->source_subdev, video, s_stream, true);
++	ret = v4l2_subdev_enable_streams(video->source_subdev,
++					 video->source_pad, BIT_ULL(0));
+ 	if (ret) {
+ 		dev_err(video->stfcamss->dev, "stream on failed\n");
+ 		goto err_pm_put;
+@@ -296,6 +319,7 @@
+ 	return 0;
+ 
+ err_pm_put:
++	video->ops->stop_streaming(video);
+ 	pm_runtime_put(video->stfcamss->dev);
+ err_pipeline_stop:
+ 	video_device_pipeline_stop(vdev);
+@@ -311,7 +335,8 @@
+ 
+ 	video->ops->stop_streaming(video);
+ 
+-	v4l2_subdev_call(video->source_subdev, video, s_stream, false);
++	v4l2_subdev_disable_streams(video->source_subdev, video->source_pad,
++				    BIT_ULL(0));
+ 
+ 	pm_runtime_put(video->stfcamss->dev);
+ 
+@@ -527,7 +552,7 @@
+ 		goto err_mutex_destroy;
+ 	}
+ 
+-	ret = stf_video_init_format(video);
++	ret = stf_video_init_format(video, NULL);
+ 	if (ret < 0) {
+ 		dev_err(video->stfcamss->dev,
+ 			"Failed to init format: %d\n", ret);
+diff --git a/drivers/staging/media/starfive/camss/stf-video.h b/drivers/staging/media/starfive/camss/stf-video.h
+--- a/drivers/staging/media/starfive/camss/stf-video.h
++++ b/drivers/staging/media/starfive/camss/stf-video.h
+@@ -81,6 +81,7 @@
+ 	const struct stfcamss_format_info *formats;
+ 	unsigned int nformats;
+ 	struct v4l2_subdev *source_subdev;
++	unsigned int source_pad;
+ };
+ 
+ struct stfcamss_video_ops {
+@@ -92,6 +93,9 @@
+ 	void (*stop_streaming)(struct stfcamss_video *video);
+ };
+ 
++int stf_video_init_format(struct stfcamss_video *video,
++			  const struct v4l2_mbus_framefmt *mbus_fmt);
++
+ int stf_video_register(struct stfcamss_video *video,
+ 		       struct v4l2_device *v4l2_dev, const char *name);
+ 

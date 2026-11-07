@@ -1,0 +1,99 @@
+From eaeae528a69378879be82f58fd3d6693e3a26905 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:13 +0100
+Subject: [PATCH 7/8] drm/bridge: cdns-dsi: route JH7110 LCD data to DSI
+
+The JH7110 video-output fabric does not route the LCD data path to DSI
+after reset. The vendor Linux driver sets bit 3 at VOUT syscon offset
+0x8 before enabling the link.
+
+Acquire the VOUT syscon from device tree and program that route while
+the wrapper clocks are active. Propagate a register-access failure and
+unwind the clocks.
+
+Assisted-by: Codex:gpt-5
+---
+ .../gpu/drm/bridge/cadence/cdns-dsi-core.h    |  2 ++
+ .../gpu/drm/bridge/cadence/cdns-dsi-jh7110.c  | 23 +++++++++++++++++--
+ 2 files changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+index 5247ce48a5170..68bde2d79b29e 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+@@ -17,6 +17,7 @@
+ 
+ struct clk;
+ struct clk_bulk_data;
++struct regmap;
+ struct reset_control;
+ struct reset_control_bulk_data;
+ 
+@@ -92,6 +93,7 @@ struct cdns_dsi {
+ #ifdef CONFIG_DRM_CDNS_DSI_JH7110
+ 	int num_rsts;
+ 	int num_clks;
++	struct regmap *vout_syscon;
+ 	struct reset_control_bulk_data *resets;
+ 	struct clk_bulk_data *clocks;
+ #endif
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index fad4cf1f95ac4..cc97f9ecc6820 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -7,12 +7,16 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/math64.h>
++#include <linux/mfd/syscon.h>
++#include <linux/regmap.h>
+ #include <linux/reset.h>
+ #include <video/videomode.h>
+ 
+ #include "cdns-dsi-jh7110.h"
+ 
+ #define JH7110_DPHY_RATE_STEP	10000000UL
++#define JH7110_VOUT_SYSCON_LCD_MAP	0x8
++#define JH7110_VOUT_SYSCON_LCD_TO_DSI	BIT(3)
+ 
+ static const char * const dsi_resets[] = {
+ 	"sys",
+@@ -32,6 +36,12 @@ static int cdns_dsi_jh7110_init(struct cdns_dsi *dsi)
+ 	int i;
+ 	int ret;
+ 
++	dsi->vout_syscon = syscon_regmap_lookup_by_phandle(dev->of_node,
++							   "starfive,vout-syscon");
++	if (IS_ERR(dsi->vout_syscon))
++		return dev_err_probe(dev, PTR_ERR(dsi->vout_syscon),
++				     "failed to get VOUT syscon\n");
++
+ 	dsi->num_clks = ARRAY_SIZE(dsi_clocks);
+ 	dsi->clocks = devm_kcalloc(dev, dsi->num_clks,
+ 				   sizeof(*dsi->clocks), GFP_KERNEL);
+@@ -70,11 +80,20 @@ static int cdns_dsi_jh7110_resume(struct cdns_dsi *dsi)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = regmap_update_bits(dsi->vout_syscon,
++				 JH7110_VOUT_SYSCON_LCD_MAP,
++				 JH7110_VOUT_SYSCON_LCD_TO_DSI,
++				 JH7110_VOUT_SYSCON_LCD_TO_DSI);
++	if (ret)
++		goto disable_clocks;
++
+ 	/* TXBYTEHS stays asserted until the D-PHY has entered HS mode. */
+ 	ret = reset_control_bulk_deassert(dsi->num_rsts - 1, dsi->resets);
+-	if (ret)
+-		clk_bulk_disable_unprepare(dsi->num_clks, dsi->clocks);
++	if (!ret)
++		return 0;
+ 
++disable_clocks:
++	clk_bulk_disable_unprepare(dsi->num_clks, dsi->clocks);
+ 	return ret;
+ }
+ 
+-- 
+2.55.0
+

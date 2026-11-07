@@ -1,0 +1,182 @@
+From bc006854a6b697dc976af9aaad0ef47e3ca8226c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 12:01:00 +0100
+Subject: [PATCH 2/4] phy: starfive: configure JH7110 D-PHY before starting its
+ PLL
+
+The TX PHY currently deasserts its analog reset and checks PLL lock in
+phy_init(), before the consumer calls phy_configure(). It then enables
+the dedicated power domain only from phy_power_on(). This can program
+unpowered registers and checks a PLL whose dividers are not configured.
+
+Power the dedicated domain from init so configure has register access.
+Keep RESETB asserted through configuration, then start the configured PLL
+and wait for lock from power_on. Enable the TX escape clock and release
+the system reset only after the PLL is stable, following the vendor boot
+sequence. Reverse that sequence on power-off and unwind every failure.
+
+Report teardown errors but finish the best-effort shutdown, so the generic
+PHY counters cannot remain set after this provider has disabled hardware.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/phy/starfive/phy-jh7110-dphy-tx.c | 107 ++++++++++++++--------
+ 1 file changed, 67 insertions(+), 40 deletions(-)
+
+diff --git a/drivers/phy/starfive/phy-jh7110-dphy-tx.c b/drivers/phy/starfive/phy-jh7110-dphy-tx.c
+index 181491a..9ce08c2 100644
+--- a/drivers/phy/starfive/phy-jh7110-dphy-tx.c
++++ b/drivers/phy/starfive/phy-jh7110-dphy-tx.c
+@@ -209,23 +209,31 @@ static u32 stf_dphy_get_config_index(u32 bitrate)
+ 	return 0;
+ }
+ 
+-static void stf_dphy_hw_reset(struct stf_dphy *dphy, int assert)
++static int stf_dphy_hw_reset(struct stf_dphy *dphy, bool deassert)
+ {
+-	int rc;
++	void __iomem *reg = dphy->topsys + STF_DPHY_APBIFSAIF_SYSCFG(100);
+ 	u32 status = 0;
++	u32 val;
++	int ret;
+ 
+-	writel(FIELD_PREP(STF_DPHY_RESETB, assert),
+-	       dphy->topsys + STF_DPHY_APBIFSAIF_SYSCFG(100));
++	val = readl(reg);
++	if (deassert)
++		val |= STF_DPHY_RESETB;
++	else
++		val &= ~STF_DPHY_RESETB;
++	writel(val, reg);
+ 
+-	if (assert) {
+-		rc = readl_poll_timeout_atomic(dphy->topsys +
+-					       STF_DPHY_APBIFSAIF_SYSCFG(8),
+-					       status,
+-					       !(FIELD_GET(STF_DPHY_RGS_CDTX_PLL_UNLOCK, status)),
+-					       STF_DPHY_HW_DELAY_US, STF_DPHY_HW_TIMEOUT_US);
+-		if (rc)
+-			dev_err(dphy->dev, "MIPI dphy-tx # PLL Locked\n");
+-	}
++	if (!deassert)
++		return 0;
++
++	ret = readl_poll_timeout(dphy->topsys +
++				 STF_DPHY_APBIFSAIF_SYSCFG(8), status,
++				 !(status & STF_DPHY_RGS_CDTX_PLL_UNLOCK),
++				 STF_DPHY_HW_DELAY_US, STF_DPHY_HW_TIMEOUT_US);
++	if (ret)
++		dev_err(dphy->dev, "MIPI D-PHY TX PLL failed to lock\n");
++
++	return ret;
+ }
+ 
+ static int stf_dphy_configure(struct phy *phy, union phy_configure_opts *opts)
+@@ -313,7 +321,37 @@ static int stf_dphy_init(struct phy *phy)
+ 	struct stf_dphy *dphy = phy_get_drvdata(phy);
+ 	int ret;
+ 
+-	stf_dphy_hw_reset(dphy, 1);
++	ret = pm_runtime_resume_and_get(dphy->dev);
++	if (ret < 0)
++		return ret;
++
++	/* Keep the PLL stopped while its dividers and lane timings change. */
++	stf_dphy_hw_reset(dphy, false);
++
++	return 0;
++}
++
++static int stf_dphy_exit(struct phy *phy)
++{
++	struct stf_dphy *dphy = phy_get_drvdata(phy);
++	int ret;
++
++	ret = pm_runtime_put_sync(dphy->dev);
++	if (ret < 0)
++		dev_err(dphy->dev, "Failed to release runtime PM: %d\n", ret);
++
++	return 0;
++}
++
++static int stf_dphy_power_on(struct phy *phy)
++{
++	struct stf_dphy *dphy = phy_get_drvdata(phy);
++	int ret;
++
++	/* Start the configured PLL and do not release the link before lock. */
++	ret = stf_dphy_hw_reset(dphy, true);
++	if (ret)
++		goto assert_dphy_reset;
+ 
+ 	writel(FIELD_PREP(STF_DPHY_SCFG_PPI_C_READY_SEL, 0) |
+ 	       FIELD_PREP(STF_DPHY_SCFG_DSI_TXREADY_ESC_SEL, 0),
+@@ -325,41 +363,22 @@ static int stf_dphy_init(struct phy *phy)
+ 	ret = clk_prepare_enable(dphy->txesc_clk);
+ 	if (ret) {
+ 		dev_err(dphy->dev, "Failed to prepare/enable txesc_clk\n");
+-		return ret;
++		goto assert_dphy_reset;
+ 	}
+ 
+ 	ret = reset_control_deassert(dphy->sys_rst);
+ 	if (ret) {
+ 		dev_err(dphy->dev, "Failed to deassert sys_rst\n");
+-		return ret;
++		goto disable_txesc;
+ 	}
+ 
+ 	return 0;
+-}
+-
+-static int stf_dphy_exit(struct phy *phy)
+-{
+-	struct stf_dphy *dphy = phy_get_drvdata(phy);
+-	int ret;
+-
+-	ret = reset_control_assert(dphy->sys_rst);
+-	if (ret) {
+-		dev_err(dphy->dev, "Failed to assert sys_rst\n");
+-		return ret;
+-	}
+ 
++disable_txesc:
+ 	clk_disable_unprepare(dphy->txesc_clk);
+-
+-	stf_dphy_hw_reset(dphy, 0);
+-
+-	return 0;
+-}
+-
+-static int stf_dphy_power_on(struct phy *phy)
+-{
+-	struct stf_dphy *dphy = phy_get_drvdata(phy);
+-
+-	return pm_runtime_resume_and_get(dphy->dev);
++assert_dphy_reset:
++	stf_dphy_hw_reset(dphy, false);
++	return ret;
+ }
+ 
+ static int stf_dphy_validate(struct phy *phy, enum phy_mode mode, int submode,
+@@ -374,8 +393,16 @@ static int stf_dphy_validate(struct phy *phy, enum phy_mode mode, int submode,
+ static int stf_dphy_power_off(struct phy *phy)
+ {
+ 	struct stf_dphy *dphy = phy_get_drvdata(phy);
++	int ret;
+ 
+-	return pm_runtime_put_sync(dphy->dev);
++	ret = reset_control_assert(dphy->sys_rst);
++	if (ret)
++		dev_err(dphy->dev, "Failed to assert sys_rst\n");
++
++	clk_disable_unprepare(dphy->txesc_clk);
++	stf_dphy_hw_reset(dphy, false);
++
++	return 0;
+ }
+ 
+ static const struct phy_ops stf_dphy_ops = {
+-- 
+2.55.0
+

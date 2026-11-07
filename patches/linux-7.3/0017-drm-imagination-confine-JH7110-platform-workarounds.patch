@@ -1,0 +1,313 @@
+From 681e0538f9f0db40f2898d47823e1d5c6d40f0b1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:55:51 +0100
+Subject: [PATCH 17/53] drm/imagination: confine JH7110 platform workarounds
+
+The JH7110 port acquires three extra clocks and a second reset through the
+generic img,img-rogue match. Other PowerVR platforms can expose similarly
+named resources with unrelated sequencing, and a second reset is not
+generically defined by the binding.
+
+Add a StarFive-specific match-data entry and use it to acquire the required
+JH7110 resources. Keep all other platforms on their original three-clock,
+one-optional-reset path. Rename and document the second reset as the GPU
+domain reset, and make both JH7110 resets mandatory.
+
+Also limit the optional Rascal/DUST flag and raw heap-base register writes
+to BVNC 36.50.54.182, make the parameter load-time only, and declare the
+matching firmware in the module metadata.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_device.c | 32 ++++++++++++----------
+ drivers/gpu/drm/imagination/pvr_device.h |  8 +++++-
+ drivers/gpu/drm/imagination/pvr_drv.c    | 10 +++++++
+ drivers/gpu/drm/imagination/pvr_fw.c     | 16 ++++++++---
+ drivers/gpu/drm/imagination/pvr_fw.h     |  3 +-
+ drivers/gpu/drm/imagination/pvr_power.c  | 47 ++++++++++++++++++--------------
+ drivers/gpu/drm/imagination/pvr_queue.c  |  2 +-
+ 7 files changed, 74 insertions(+), 44 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_device.c b/drivers/gpu/drm/imagination/pvr_device.c
+index 0ef3583fed38bb4a5fa69a0b2f6d7a7bcc701cb8..8ce7c987a8bceba8d3c2d89d7bc0e851c3942ccc 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.c
++++ b/drivers/gpu/drm/imagination/pvr_device.c
+@@ -100,9 +100,9 @@ static int pvr_device_clk_init(struct pvr_device *pvr_dev)
+ 	struct clk *core_clk;
+ 	struct clk *sys_clk;
+ 	struct clk *mem_clk;
+-	struct clk *apb_clk;
+-	struct clk *core_clk_gate;
+-	struct clk *rtc_clk;
++	struct clk *apb_clk = NULL;
++	struct clk *core_clk_gate = NULL;
++	struct clk *rtc_clk = NULL;
+ 
+ 	core_clk = devm_clk_get(drm_dev->dev, "core");
+ 	if (IS_ERR(core_clk))
+@@ -119,20 +119,22 @@ static int pvr_device_clk_init(struct pvr_device *pvr_dev)
+ 		return dev_err_probe(drm_dev->dev, PTR_ERR(mem_clk),
+ 				     "failed to get mem clock\n");
+ 
+-	apb_clk = devm_clk_get_optional(drm_dev->dev, "apb");
+-	if (IS_ERR(apb_clk))
+-		return dev_err_probe(drm_dev->dev, PTR_ERR(apb_clk),
+-				     "failed to get apb clock\n");
++	if (pvr_dev->device_data->has_jh7110_resources) {
++		apb_clk = devm_clk_get(drm_dev->dev, "apb");
++		if (IS_ERR(apb_clk))
++			return dev_err_probe(drm_dev->dev, PTR_ERR(apb_clk),
++					     "failed to get apb clock\n");
+ 
+-	core_clk_gate = devm_clk_get_optional(drm_dev->dev, "core_clk");
+-	if (IS_ERR(core_clk_gate))
+-		return dev_err_probe(drm_dev->dev, PTR_ERR(core_clk_gate),
+-				     "failed to get core_clk clock\n");
++		core_clk_gate = devm_clk_get(drm_dev->dev, "core_clk");
++		if (IS_ERR(core_clk_gate))
++			return dev_err_probe(drm_dev->dev, PTR_ERR(core_clk_gate),
++					     "failed to get core_clk clock\n");
+ 
+-	rtc_clk = devm_clk_get_optional(drm_dev->dev, "rtc");
+-	if (IS_ERR(rtc_clk))
+-		return dev_err_probe(drm_dev->dev, PTR_ERR(rtc_clk),
+-				     "failed to get rtc clock\n");
++		rtc_clk = devm_clk_get(drm_dev->dev, "rtc");
++		if (IS_ERR(rtc_clk))
++			return dev_err_probe(drm_dev->dev, PTR_ERR(rtc_clk),
++					     "failed to get rtc clock\n");
++	}
+ 
+ 	pvr_dev->core_clk = core_clk;
+ 	pvr_dev->sys_clk = sys_clk;
+diff --git a/drivers/gpu/drm/imagination/pvr_device.h b/drivers/gpu/drm/imagination/pvr_device.h
+index 6bf4dade2b24f817a83e0b6ec4414d10d8d72ebe..3a423ad9772b5c7d7bfff59b5c7d4b516594f90f 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.h
++++ b/drivers/gpu/drm/imagination/pvr_device.h
+@@ -65,9 +65,11 @@ struct pvr_fw_version {
+ /**
+  * struct pvr_device_data - Platform specific data associated with a compatible string.
+  * @pwr_ops: Pointer to a structure with platform-specific power functions.
++ * @has_jh7110_resources: Whether the device uses JH7110-specific clocks and resets.
+  */
+ struct pvr_device_data {
+ 	const struct pvr_power_sequence_ops *pwr_ops;
++	bool has_jh7110_resources;
+ };
+ 
+ /**
+@@ -148,10 +150,13 @@ struct pvr_device {
+ 	 */
+ 	struct clk *mem_clk;
+ 
++	/** @apb_clk: JH7110 APB clock. */
+ 	struct clk *apb_clk;
+ 
++	/** @core_clk_gate: JH7110 core clock gate. */
+ 	struct clk *core_clk_gate;
+ 
++	/** @rtc_clk: JH7110 RTC toggle clock. */
+ 	struct clk *rtc_clk;
+ 
+ 	/**
+@@ -176,7 +181,8 @@ struct pvr_device {
+ 	 */
+ 	struct reset_control *reset;
+ 
+-	struct reset_control *reset_doma;
++	/** @domain_reset: JH7110 GPU domain reset. */
++	struct reset_control *domain_reset;
+ 
+ 	/** @pwrseq: Pointer to a power sequencer, if one is used. */
+ 	struct pwrseq_desc *pwrseq;
+diff --git a/drivers/gpu/drm/imagination/pvr_drv.c b/drivers/gpu/drm/imagination/pvr_drv.c
+index 1ecb195d0c20db8ec7a73040489e8937b0e8707a..29316bdbf03b76d21055c109ece37eefcea91582 100644
+--- a/drivers/gpu/drm/imagination/pvr_drv.c
++++ b/drivers/gpu/drm/imagination/pvr_drv.c
+@@ -1492,11 +1492,20 @@ static const struct pvr_device_data pvr_device_data_manual = {
+ 	.pwr_ops = &pvr_power_sequence_ops_manual,
+ };
+ 
++static const struct pvr_device_data pvr_device_data_jh7110 = {
++	.pwr_ops = &pvr_power_sequence_ops_manual,
++	.has_jh7110_resources = true,
++};
++
+ static const struct pvr_device_data pvr_device_data_pwrseq = {
+ 	.pwr_ops = &pvr_power_sequence_ops_pwrseq,
+ };
+ 
+ static const struct of_device_id dt_match[] = {
++	{
++		.compatible = "starfive,jh7110-gpu",
++		.data = &pvr_device_data_jh7110,
++	},
+ 	{
+ 		.compatible = "thead,th1520-gpu",
+ 		.data = &pvr_device_data_pwrseq,
+@@ -1539,5 +1548,6 @@ MODULE_DESCRIPTION(PVR_DRIVER_DESC);
+ MODULE_LICENSE("Dual MIT/GPL");
+ MODULE_IMPORT_NS("DMA_BUF");
+ MODULE_FIRMWARE("powervr/rogue_33.15.11.3_v1.fw");
++MODULE_FIRMWARE("powervr/rogue_36.50.54.182_v1.fw");
+ MODULE_FIRMWARE("powervr/rogue_36.52.104.182_v1.fw");
+ MODULE_FIRMWARE("powervr/rogue_36.53.104.796_v1.fw");
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.c b/drivers/gpu/drm/imagination/pvr_fw.c
+index adc3db41f3e621210befb4d2d2277f1178a9889c..21438b61dd107a625d229bf61a1c2135a4a75248 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.c
++++ b/drivers/gpu/drm/imagination/pvr_fw.c
+@@ -28,10 +28,10 @@
+ 
+ #define FW_BOOT_TIMEOUT_USEC 5000000
+ 
+-bool pvr_pow_rascaldust_enable;
+-module_param_named(pow_rascaldust_enable, pvr_pow_rascaldust_enable, bool, 0644);
++static bool pvr_pow_rascaldust_enable;
++module_param_named(pow_rascaldust_enable, pvr_pow_rascaldust_enable, bool, 0400);
+ MODULE_PARM_DESC(pow_rascaldust_enable,
+-		 "Enable firmware Rascal/DUST power management init flag");
++		 "Enable the JH7110 Rascal/DUST power-management workaround");
+ 
+ /* Config heap occupies top 192k of the firmware heap. */
+ #define PVR_ROGUE_FW_CONFIG_HEAP_GRANULARITY SZ_64K
+@@ -426,7 +426,7 @@ fw_sysdata_init(void *cpu_ptr, void *priv)
+ 	if (slc_size_in_kilobytes < ROGUE_FWIF_SLC_MIN_SIZE_FOR_DM_OVERLAP_KB)
+ 		config_flags |= ROGUE_FWIF_INICFG_DISABLE_DM_OVERLAP;
+ 
+-	if (pvr_pow_rascaldust_enable)
++	if (pvr_fw_uses_rascaldust_wa(pvr_dev))
+ 		config_flags |= ROGUE_FWIF_INICFG_POW_RASCALDUST;
+ 
+ 	fwif_sysdata->config_flags = config_flags;
+@@ -964,6 +964,14 @@ pvr_fw_program_heap_bases(struct pvr_device *pvr_dev)
+ 		       (u32)(ROGUE_USCCODE_HEAP_BASE >> 32));
+ }
+ 
++bool
++pvr_fw_uses_rascaldust_wa(const struct pvr_device *pvr_dev)
++{
++	return pvr_pow_rascaldust_enable &&
++	       pvr_gpu_id_to_packed_bvnc(&pvr_dev->gpu_id) ==
++		       PVR_PACKED_BVNC(36, 50, 54, 182);
++}
++
+ /**
+  * pvr_fw_init() - Initialise and boot firmware
+  * @pvr_dev: Target PowerVR device
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.h b/drivers/gpu/drm/imagination/pvr_fw.h
+index 6e8ac113d7bd49c2ca55a9767ff72ea5fc1d4dde..d96c53ad72329e015ca5982311be34d1ad51e861 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.h
++++ b/drivers/gpu/drm/imagination/pvr_fw.h
+@@ -404,8 +404,7 @@ int pvr_fw_validate_init_device_info(struct pvr_device *pvr_dev);
+ int pvr_fw_init(struct pvr_device *pvr_dev);
+ void pvr_fw_fini(struct pvr_device *pvr_dev);
+ void pvr_fw_program_heap_bases(struct pvr_device *pvr_dev);
+-
+-extern bool pvr_pow_rascaldust_enable;
++bool pvr_fw_uses_rascaldust_wa(const struct pvr_device *pvr_dev);
+ 
+ int pvr_wait_for_fw_boot(struct pvr_device *pvr_dev);
+ 
+diff --git a/drivers/gpu/drm/imagination/pvr_power.c b/drivers/gpu/drm/imagination/pvr_power.c
+index 27acac9f6e477cbebd23687032fa92a578de0665..346d0541816ebab0be7bc128a45404b77eddaea1 100644
+--- a/drivers/gpu/drm/imagination/pvr_power.c
++++ b/drivers/gpu/drm/imagination/pvr_power.c
+@@ -272,20 +272,23 @@ static int pvr_power_init_manual(struct pvr_device *pvr_dev)
+ 	struct drm_device *drm_dev = from_pvr_device(pvr_dev);
+ 	struct reset_control *reset;
+ 
+-	reset = devm_reset_control_get_optional_exclusive(drm_dev->dev, NULL);
++	if (pvr_dev->device_data->has_jh7110_resources)
++		reset = devm_reset_control_get_exclusive_by_index(drm_dev->dev, 0);
++	else
++		reset = devm_reset_control_get_optional_exclusive(drm_dev->dev, NULL);
+ 	if (IS_ERR(reset))
+ 		return dev_err_probe(drm_dev->dev, PTR_ERR(reset),
+ 				     "failed to get gpu reset line\n");
+ 
+ 	pvr_dev->reset = reset;
+ 
+-	pvr_dev->reset_doma = devm_reset_control_get_exclusive_by_index(drm_dev->dev, 1);
+-	if (IS_ERR(pvr_dev->reset_doma)) {
+-		if (PTR_ERR(pvr_dev->reset_doma) == -ENOENT)
+-			pvr_dev->reset_doma = NULL;
+-		else
+-			return dev_err_probe(drm_dev->dev, PTR_ERR(pvr_dev->reset_doma),
+-					     "failed to get gpu secondary reset line\n");
++	if (pvr_dev->device_data->has_jh7110_resources) {
++		pvr_dev->domain_reset =
++			devm_reset_control_get_exclusive_by_index(drm_dev->dev, 1);
++		if (IS_ERR(pvr_dev->domain_reset))
++			return dev_err_probe(drm_dev->dev,
++					     PTR_ERR(pvr_dev->domain_reset),
++					     "failed to get gpu domain reset line\n");
+ 	}
+ 
+ 	return 0;
+@@ -307,17 +310,19 @@ static int pvr_power_on_sequence_manual(struct pvr_device *pvr_dev)
+ 	if (err)
+ 		goto err_sys_clk_disable;
+ 
+-	err = clk_prepare_enable(pvr_dev->apb_clk);
+-	if (err)
+-		goto err_mem_clk_disable;
++	if (pvr_dev->device_data->has_jh7110_resources) {
++		err = clk_prepare_enable(pvr_dev->apb_clk);
++		if (err)
++			goto err_mem_clk_disable;
+ 
+-	err = clk_prepare_enable(pvr_dev->core_clk_gate);
+-	if (err)
+-		goto err_apb_clk_disable;
++		err = clk_prepare_enable(pvr_dev->core_clk_gate);
++		if (err)
++			goto err_apb_clk_disable;
+ 
+-	err = clk_prepare_enable(pvr_dev->rtc_clk);
+-	if (err)
+-		goto err_core_clk_gate_disable;
++		err = clk_prepare_enable(pvr_dev->rtc_clk);
++		if (err)
++			goto err_core_clk_gate_disable;
++	}
+ 
+ 	/*
+ 	 * According to the hardware manual, a delay of at least 32 clock
+@@ -333,9 +338,9 @@ static int pvr_power_on_sequence_manual(struct pvr_device *pvr_dev)
+ 	if (err)
+ 		goto err_rtc_clk_disable;
+ 
+-	if (pvr_dev->reset_doma) {
++	if (pvr_dev->domain_reset) {
+ 		udelay(1);
+-		err = reset_control_deassert(pvr_dev->reset_doma);
++		err = reset_control_deassert(pvr_dev->domain_reset);
+ 		if (err)
+ 			goto err_reset_assert;
+ 	}
+@@ -371,8 +376,8 @@ static int pvr_power_off_sequence_manual(struct pvr_device *pvr_dev)
+ 	int err, err2;
+ 
+ 	err = 0;
+-	if (pvr_dev->reset_doma) {
+-		err = reset_control_assert(pvr_dev->reset_doma);
++	if (pvr_dev->domain_reset) {
++		err = reset_control_assert(pvr_dev->domain_reset);
+ 		udelay(1);
+ 	}
+ 	err2 = reset_control_assert(pvr_dev->reset);
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.c b/drivers/gpu/drm/imagination/pvr_queue.c
+index dbae09cd2742410ab9cfbf33286d9ed652f07576..2a5b821e7b24cb49d68ec38d3aa634c31555bcc8 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.c
++++ b/drivers/gpu/drm/imagination/pvr_queue.c
+@@ -785,7 +785,7 @@ static struct dma_fence *pvr_queue_run_job(struct drm_sched_job *sched_job)
+ 	/* Submit our job to the CCCB */
+ 	pvr_queue_submit_job_to_cccb(job);
+ 
+-	if (pvr_pow_rascaldust_enable)
++	if (pvr_fw_uses_rascaldust_wa(pvr_dev))
+ 		pvr_fw_program_heap_bases(pvr_dev);
+ 
+ 	if (job->paired_job) {
+-- 
+2.53.0

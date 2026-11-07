@@ -1,0 +1,144 @@
+From 48ded87f4126e72205f846d6a2c97857139d1161 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 8 Aug 2026 16:57:45 +0100
+Subject: [PATCH 48/53] power: supply: cw2015: handle low-SoC alert interrupts
+
+The CW2015 latches its active-low ALRT output when state of charge
+crosses the programmed threshold. Parse the threshold, clear stale and
+serviced alerts, and refresh the power-supply state from a threaded
+interrupt.
+
+Disable the non-wakeup interrupt across system suspend while retaining
+the existing polling fallback.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/power/supply/cw2015_battery.c | 63 +++++++++++++++++++++++++++
+ 1 file changed, 63 insertions(+)
+
+diff --git a/drivers/power/supply/cw2015_battery.c b/drivers/power/supply/cw2015_battery.c
+index ad37c88a75186..9395682d808df 100644
+--- a/drivers/power/supply/cw2015_battery.c
++++ b/drivers/power/supply/cw2015_battery.c
+@@ -12,6 +12,7 @@
+ #include <linux/bits.h>
+ #include <linux/delay.h>
+ #include <linux/i2c.h>
++#include <linux/interrupt.h>
+ #include <linux/gfp.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+@@ -43,6 +44,7 @@
+ #define CW2015_CONFIG_UPDATE_FLG	(0x01 << 1)
+ #define CW2015_ATHD(x)			((x) << 3)
+ #define CW2015_MASK_ATHD		GENMASK(7, 3)
++#define CW2015_ALERT			BIT(7)
+ #define CW2015_MASK_SOC			GENMASK(12, 0)
+ 
+ /* reset gauge of no valid state of charge could be polled for 40s */
+@@ -457,6 +459,28 @@ static void cw_bat_work(struct work_struct *work)
+ 			   msecs_to_jiffies(cw_bat->poll_interval_ms));
+ }
+ 
++static int cw_clear_alert(struct cw_battery *cw_bat)
++{
++	return regmap_update_bits(cw_bat->regmap, CW2015_REG_RRT_ALERT,
++				  CW2015_ALERT, 0);
++}
++
++static irqreturn_t cw_bat_irq(int irq, void *data)
++{
++	struct cw_battery *cw_bat = data;
++	int ret;
++
++	ret = cw_clear_alert(cw_bat);
++	if (ret)
++		dev_err_ratelimited(cw_bat->dev,
++				    "Failed to clear low-SoC alert: %d\n", ret);
++
++	mod_delayed_work(cw_bat->battery_workqueue,
++			 &cw_bat->battery_delay_work, 0);
++
++	return IRQ_HANDLED;
++}
++
+ static bool cw_battery_valid_time_to_empty(struct cw_battery *cw_bat)
+ {
+ 	return	cw_bat->time_to_empty > 0 &&
+@@ -559,6 +583,7 @@ static const struct power_supply_desc cw2015_bat_desc = {
+ static int cw2015_parse_properties(struct cw_battery *cw_bat)
+ {
+ 	struct device *dev = cw_bat->dev;
++	u32 alert_level;
+ 	int length;
+ 	int ret;
+ 
+@@ -590,6 +615,16 @@ static int cw2015_parse_properties(struct cw_battery *cw_bat)
+ 		cw_bat->poll_interval_ms = CW2015_DEFAULT_POLL_INTERVAL_MS;
+ 	}
+ 
++	ret = device_property_read_u32(dev, "cellwise,alert-low-soc-level",
++				       &alert_level);
++	if (!ret) {
++		if (alert_level > 31)
++			return dev_err_probe(dev, -EINVAL,
++					     "alert level must be at most 31%%\n");
++
++		cw_bat->alert_level = alert_level;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -706,6 +741,20 @@ static int cw_bat_probe(struct i2c_client *client)
+ 		return ret;
+ 	}
+ 
++	if (client->irq > 0) {
++		ret = cw_clear_alert(cw_bat);
++		if (ret)
++			return dev_err_probe(&client->dev, ret,
++					     "Failed to clear low-SoC alert\n");
++
++		ret = devm_request_threaded_irq(&client->dev, client->irq, NULL,
++						cw_bat_irq, IRQF_ONESHOT,
++						client->name, cw_bat);
++		if (ret)
++			return dev_err_probe(&client->dev, ret,
++					     "Failed to request alert interrupt\n");
++	}
++
+ 	queue_delayed_work(cw_bat->battery_workqueue,
+ 			   &cw_bat->battery_delay_work, msecs_to_jiffies(10));
+ 	return 0;
+@@ -716,6 +765,9 @@ static int __maybe_unused cw_bat_suspend(struct device *dev)
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	struct cw_battery *cw_bat = i2c_get_clientdata(client);
+ 
++	if (client->irq > 0)
++		disable_irq(client->irq);
++
+ 	cancel_delayed_work_sync(&cw_bat->battery_delay_work);
+ 	return 0;
+ }
+@@ -724,6 +776,17 @@ static int __maybe_unused cw_bat_resume(struct device *dev)
+ {
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	struct cw_battery *cw_bat = i2c_get_clientdata(client);
++	int ret;
++
++	if (client->irq > 0) {
++		ret = cw_clear_alert(cw_bat);
++		if (ret)
++			dev_err(cw_bat->dev,
++				"Failed to clear low-SoC alert after resume: %d\n",
++				ret);
++
++		enable_irq(client->irq);
++	}
+ 
+ 	queue_delayed_work(cw_bat->battery_workqueue,
+ 			   &cw_bat->battery_delay_work, 0);
+-- 
+2.55.0
+

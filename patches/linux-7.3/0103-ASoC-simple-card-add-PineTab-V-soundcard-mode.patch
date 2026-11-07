@@ -1,0 +1,111 @@
+From 8e51d3409ad01e7f97ed30224dc595a2206974df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Wed, 26 Aug 2026 12:30:00 +0100
+Subject: [PATCH] ASoC: simple-card: add PineTab-V soundcard identity
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PineTab-V connects the ES8316 codec to separate JH7110 playback and
+capture DAIs.  Preserve the vendor topology's two independent direct links:
+the receive DAI becomes capture PCM 0 and the transmit DAI becomes playback
+PCM 1.  Selecting DPCM here leaves no usable routed endpoint because this
+board does not describe a DPCM front-end/back-end graph.
+
+Add a board-specific compatible and expose "soundcard" as the ALSA driver
+identity.  Expose the platform driver only as "asoc-soundcard"; PineTab-V
+therefore has no legacy asoc-simple-card runtime or module identity.
+
+The Device Tree property namespace remains simple-audio-card because it is
+the stable binding ABI; changing those property names would break binding
+compatibility without changing functionality.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../devicetree/bindings/sound/simple-card.yaml     |  1 +
+ .../boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi |  2 +-
+ sound/soc/generic/simple-card.c                    | 22 ++++++++++++++++------
+ 3 files changed, 18 insertions(+), 7 deletions(-)
+
+diff --git i/Documentation/devicetree/bindings/sound/simple-card.yaml w/Documentation/devicetree/bindings/sound/simple-card.yaml
+index 23310f303..3263fef79 100644
+--- i/Documentation/devicetree/bindings/sound/simple-card.yaml
++++ w/Documentation/devicetree/bindings/sound/simple-card.yaml
+@@ -151,6 +151,7 @@ properties:
+   compatible:
+     contains:
+       enum:
++        - pine64,pinetab-v-soundcard
+         - simple-audio-card
+         - simple-scu-audio-card
+ 
+diff --git i/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi w/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+index ce25e14e6..5ecff65cc 100644
+--- i/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ w/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -224,7 +224,7 @@ speaker_amp: audio-amplifier {
+ 	};
+ 
+ 	sound {
+-		compatible = "simple-audio-card";
++		compatible = "pine64,pinetab-v-soundcard";
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+ 		simple-audio-card,name = "PineTab-V ES8316 Audio";
+diff --git i/sound/soc/generic/simple-card.c w/sound/soc/generic/simple-card.c
+index e7ad7af04..d4044bd18 100644
+--- i/sound/soc/generic/simple-card.c
++++ w/sound/soc/generic/simple-card.c
+@@ -754,12 +754,16 @@ static int simple_probe(struct platform_device *pdev)
+ 	card->owner		= THIS_MODULE;
+ 	card->dev		= dev;
+ 	card->probe		= simple_soc_probe;
+-	card->driver_name       = "simple-card";
++	if (of_device_is_compatible(dev->of_node, "pine64,pinetab-v-soundcard"))
++		card->driver_name = "soundcard";
++	else
++		card->driver_name = "simple-card";
+ 
+ 	return simple_parse_of(priv);
+ }
+ 
+ static const struct of_device_id simple_of_match[] = {
++	{ .compatible = "pine64,pinetab-v-soundcard", },
+ 	{ .compatible = "simple-audio-card", },
+ 	{ .compatible = "simple-scu-audio-card",
+ 	  .data = (void *)DPCM_SELECTABLE },
+@@ -767,19 +771,25 @@ static const struct of_device_id simple_of_match[] = {
+ };
+ MODULE_DEVICE_TABLE(of, simple_of_match);
+ 
+-static struct platform_driver simple_card = {
++static const struct platform_device_id soundcard_ids[] = {
++	{ "asoc-soundcard" },
++	{ }
++};
++MODULE_DEVICE_TABLE(platform, soundcard_ids);
++
++static struct platform_driver soundcard = {
+ 	.driver = {
+-		.name = "asoc-simple-card",
++		.name = "asoc-soundcard",
+ 		.pm = &snd_soc_pm_ops,
+ 		.of_match_table = simple_of_match,
+ 	},
++	.id_table = soundcard_ids,
+ 	.probe = simple_probe,
+ 	.remove = simple_util_remove,
+ };
+ 
+-module_platform_driver(simple_card);
++module_platform_driver(soundcard);
+ 
+-MODULE_ALIAS("platform:asoc-simple-card");
+ MODULE_LICENSE("GPL v2");
+-MODULE_DESCRIPTION("ASoC Simple Sound Card");
++MODULE_DESCRIPTION("ASoC Sound Card");
+ MODULE_AUTHOR("Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>");
+-- 
+2.55.0

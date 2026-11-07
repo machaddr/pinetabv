@@ -1,0 +1,34 @@
+From b1e75731613569720001a855e1a0e3e66bec9c10 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 12:00:00 +0100
+Subject: [PATCH 4/4] riscv: dts: starfive: use the JH7110 DPHY-TX power domain
+
+The MIPI D-PHY TX analog block has a dedicated power switch in the
+JH7110 AON syscon. The vendor implementations set that switch before
+programming any PHY registers, and the binding example describes the
+same AON domain.
+
+Attach the TX PHY to its dedicated power domain instead of the VOUT
+domain so runtime PM controls the analog block required by the DSI link.
+
+Assisted-by: Codex:gpt-5
+---
+ arch/riscv/boot/dts/starfive/jh7110.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index 6b487ea..365747c 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1427,7 +1427,7 @@
+ 			clock-names = "txesc";
+ 			resets = <&voutcrg JH7110_VOUTRST_MIPITX_DPHY_SYS>;
+ 			reset-names = "sys";
+-			power-domains = <&pwrc JH7110_PD_VOUT>;
++			power-domains = <&aon_syscon JH7110_AON_PD_DPHY_TX>;
+ 			#phy-cells = <0>;
+ 			status = "disabled";
+ 		};
+-- 
+2.55.0
+

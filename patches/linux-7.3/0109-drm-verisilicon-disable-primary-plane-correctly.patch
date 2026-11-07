@@ -1,0 +1,43 @@
+From 4d40ae88bf45d0a11229dc3bbc583862108422fa Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Thu, 27 Aug 2026 20:10:00 +0100
+Subject: [PATCH] drm: verisilicon: disable the primary plane correctly
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The primary-plane disable callback sets FB_EN, exactly like its enable
+callback.  Consequently the DC8200 continues scanning out the old buffer
+after DRM has disabled the plane.  DRM may already have released or reused
+the buffer.  This is visible on PineTab-V as stale characters, short-lived
+image trails and corruption across fbcon-to-compositor and GNOME modeset
+transitions.
+
+The vendor DC8200 driver programs bit 13 from fb.enable and writes zero
+when disabling a primary plane.  Mirror that behavior by clearing FB_EN
+before committing the shadow registers.
+
+Fixes: dbf21777caa8 ("drm: verisilicon: add a driver for Verisilicon display controllers")
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/drivers/gpu/drm/verisilicon/vs_dc_hw.c
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/verisilicon/vs_primary_plane.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_primary_plane.c b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+index 9733abf79e06..719ca73b56d9 100644
+--- a/drivers/gpu/drm/verisilicon/vs_primary_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+@@ -73,7 +73,7 @@ static void vs_primary_plane_atomic_disable(struct drm_plane *plane,
+ 	unsigned int output = vcrtc->id;
+ 	struct vs_dc *dc = vcrtc->dc;
+ 
+-	regmap_set_bits(dc->regs, VSDC_FB_CONFIG_EX(output),
+-			VSDC_FB_CONFIG_EX_FB_EN);
++	regmap_clear_bits(dc->regs, VSDC_FB_CONFIG_EX(output),
++			  VSDC_FB_CONFIG_EX_FB_EN);
+ 
+ 	vs_primary_plane_commit(dc, output);
+-- 
+2.51.0

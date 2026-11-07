@@ -1,0 +1,51 @@
+From 5608af7484b2eb7d68ad9590116f52d063ec7c33 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Wed, 26 Aug 2026 11:35:00 +0100
+Subject: [PATCH] riscv: dts: starfive: fix PineTab-V audio jack routing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The PineTab-V headset connector pulls HP_DET low when a plug is inserted,
+but the Device Tree currently describes it as active high.  This reverses
+jack availability in userspace: inserting headphones selects the speakers
+and removing them leaves the headphone route selected.
+
+GPIO13 is not a microphone insertion switch.  The schematic shows
+HEADSET_MIC_DET_GPIO13 strapped high through R215 and decoupled by C324,
+with no connection to the headset socket.  Do not expose it as a dynamic
+microphone jack detector.  Use the headset insertion event for both the
+headphone and headset-microphone UCM routes instead.
+
+Keep pin switches only for endpoints that userspace must route
+explicitly.  The Headphones DAPM pin is owned by the physical jack GPIO
+and must not also be driven by a UCM pin switch, which otherwise races
+with jack events.
+
+Name the card after the board and codec, and expose independent switches
+for the internal microphone, headset microphone and internal speakers.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi   | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -229,6 +229,9 @@
+-		simple-audio-card,name = "PineTab-V";
++		simple-audio-card,name = "PineTab-V ES8316 Audio";
+ 		simple-audio-card,aux-devs = <&speaker_amp>;
+-		simple-audio-card,hp-det-gpios = <&sysgpio 36 GPIO_ACTIVE_HIGH>;
++		simple-audio-card,hp-det-gpios = <&sysgpio 36 GPIO_ACTIVE_LOW>;
++		simple-audio-card,pin-switches =
++			"Internal Microphone", "Headset Microphone",
++			"Internal Speakers";
+ 		simple-audio-card,widgets =
+ 			"Microphone", "Internal Microphone",
+ 			"Microphone", "Headset Microphone",
+-- 
+2.55.0

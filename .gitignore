@@ -1,0 +1,34 @@
+# Local build workspaces: downloads, source checkouts, builds and staging.
+/work-*/
+
+# Disk images, transactional image builds and incomplete downloads.
+*.img
+*.img.gz
+*.img.xz
+*.img.zst
+*.img.bz2
+*.raw
+*.qcow2
+*.building.*
+*.download
+
+# Camera captures and local diagnostic output.
+*.nv12
+/logs/
+/*.log
+/*.summary.txt
+/*.uboot-commands.txt
+/*-report.txt
+
+# Python and kernel checkpatch caches.
+__pycache__/
+*.py[cod]
+/.checkpatch-camelcase.*
+
+# Editor backups and OS metadata.
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Keep release packages, manifests and evidence under updates/ visible.

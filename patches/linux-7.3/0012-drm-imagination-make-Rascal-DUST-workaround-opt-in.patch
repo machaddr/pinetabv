@@ -1,0 +1,76 @@
+From b914d502a904a0ecac423b24c1e0f05e9450ea82 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Sun, 10 May 2026 15:53:09 -0400
+Subject: [PATCH 12/53] drm/imagination: make Rascal/DUST workaround opt-in
+
+The downstream JH7110 bring-up sets the firmware Rascal/DUST power flag
+and programs raw heap-base registers for every dispatch. Neither operation
+is part of the upstream PowerVR path, and enabling them unconditionally
+makes the workaround affect every supported core.
+
+Keep the workaround disabled by default and expose an explicit module
+parameter for controlled hardware diagnosis. A later platform patch
+restricts it to the exact JH7110 BVNC.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_fw.c    | 8 +++++++-
+ drivers/gpu/drm/imagination/pvr_fw.h    | 2 ++
+ drivers/gpu/drm/imagination/pvr_queue.c | 3 ++-
+ 3 files changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.c b/drivers/gpu/drm/imagination/pvr_fw.c
+index 70ea9af9d0acd27f1caa6022b5fa7467800d877a..adc3db41f3e621210befb4d2d2277f1178a9889c 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.c
++++ b/drivers/gpu/drm/imagination/pvr_fw.c
+@@ -28,6 +28,11 @@
+ 
+ #define FW_BOOT_TIMEOUT_USEC 5000000
+ 
++bool pvr_pow_rascaldust_enable;
++module_param_named(pow_rascaldust_enable, pvr_pow_rascaldust_enable, bool, 0644);
++MODULE_PARM_DESC(pow_rascaldust_enable,
++		 "Enable firmware Rascal/DUST power management init flag");
++
+ /* Config heap occupies top 192k of the firmware heap. */
+ #define PVR_ROGUE_FW_CONFIG_HEAP_GRANULARITY SZ_64K
+ #define PVR_ROGUE_FW_CONFIG_HEAP_SIZE (3 * PVR_ROGUE_FW_CONFIG_HEAP_GRANULARITY)
+@@ -421,7 +426,8 @@ fw_sysdata_init(void *cpu_ptr, void *priv)
+ 	if (slc_size_in_kilobytes < ROGUE_FWIF_SLC_MIN_SIZE_FOR_DM_OVERLAP_KB)
+ 		config_flags |= ROGUE_FWIF_INICFG_DISABLE_DM_OVERLAP;
+ 
+-	config_flags |= ROGUE_FWIF_INICFG_POW_RASCALDUST;
++	if (pvr_pow_rascaldust_enable)
++		config_flags |= ROGUE_FWIF_INICFG_POW_RASCALDUST;
+ 
+ 	fwif_sysdata->config_flags = config_flags;
+ }
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.h b/drivers/gpu/drm/imagination/pvr_fw.h
+index cfe807ff885798a5d0caa5410a57f2225fc6d588..cc6639b2d2360d63361e7ba1440a151d809a1a37 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.h
++++ b/drivers/gpu/drm/imagination/pvr_fw.h
+@@ -404,6 +404,8 @@ int pvr_fw_init(struct pvr_device *pvr_dev);
+ void pvr_fw_fini(struct pvr_device *pvr_dev);
+ void pvr_fw_program_heap_bases(struct pvr_device *pvr_dev);
+ 
++extern bool pvr_pow_rascaldust_enable;
++
+ int pvr_wait_for_fw_boot(struct pvr_device *pvr_dev);
+ 
+ int
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.c b/drivers/gpu/drm/imagination/pvr_queue.c
+index 1269b1038082e4471174bff02cd587495ac936fc..564ddda368cd02898037e24060b13e619ad55179 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.c
++++ b/drivers/gpu/drm/imagination/pvr_queue.c
+@@ -785,7 +785,8 @@ static struct dma_fence *pvr_queue_run_job(struct drm_sched_job *sched_job)
+ 	/* Submit our job to the CCCB */
+ 	pvr_queue_submit_job_to_cccb(job);
+ 
+-	pvr_fw_program_heap_bases(pvr_dev);
++	if (pvr_pow_rascaldust_enable)
++		pvr_fw_program_heap_bases(pvr_dev);
+ 
+ 	if (job->paired_job) {
+ 		struct pvr_job *geom_job = job;
+-- 
+2.53.0

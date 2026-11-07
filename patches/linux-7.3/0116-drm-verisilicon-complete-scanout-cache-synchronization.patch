@@ -1,0 +1,193 @@
+From 3da88ca77be9637166f36d70a7d68ee5f9af6d01 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 24 Oct 2026 11:10:24 +0100
+Subject: [PATCH] drm: verisilicon: complete cache synchronization before
+ scanout
+
+The damage-sync helper used by the previous fix skips imported GEM DMA
+objects: the PRIME constructor deliberately clears map_noncoherent even
+when the importing display requires explicit cache maintenance. Such
+objects need their actual imported SG mapping synchronized before use.
+
+Also distinguish plane scene damage from cache contents when selecting a
+different framebuffer. A small scene-damage clip does not establish that
+all other writes to a newly selected swapchain buffer are already in RAM.
+Synchronize the complete native allocation on a buffer switch and the
+complete imported SG table using PRIME's DMA_BIDIRECTIONAL direction.
+Keep the allocation flag unchanged so mmap/free still use the right path.
+
+For updates to the same native framebuffer, retain row damage tracking
+but calculate offsets from the GEM/framebuffer origin. Damage coordinates
+already include source cropping; adding them to an address containing
+src_y would count that offset twice. Limit the final row to the allocation
+size, including buffers which omit the last stride's padding.
+
+Use the shared helper for both primary and cursor planes. Report the DMA
+coherence, CPU-mapping capability and chosen synchronization mode at every
+DRM initialization so a physical boot log identifies the active path.
+These changes close concrete synchronization gaps; the remaining display
+artifacts still require a new physical tablet test.
+
+Link: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/gpu/drm/drm_gem_dma_helper.c?h=v7.3
+Link: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/gpu/drm/drm_prime.c?h=v7.3
+Link: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/gpu/drm/drm_plane.c?h=v7.3#n1580
+Assisted-by: Codex (OpenAI)
+---
+ drivers/gpu/drm/verisilicon/vs_cursor_plane.c |  2 +-
+ drivers/gpu/drm/verisilicon/vs_drm.c          | 11 ++--
+ drivers/gpu/drm/verisilicon/vs_plane.c        | 51 +++++++++++++++++++
+ drivers/gpu/drm/verisilicon/vs_plane.h        |  3 ++
+ .../gpu/drm/verisilicon/vs_primary_plane.c    |  2 +-
+ 5 files changed, 63 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_cursor_plane.c b/drivers/gpu/drm/verisilicon/vs_cursor_plane.c
+index 408fc2d..15b2f2b 100644
+--- a/drivers/gpu/drm/verisilicon/vs_cursor_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_cursor_plane.c
+@@ -153,7 +153,7 @@ static void vs_cursor_plane_atomic_update(struct drm_plane *plane,
+ 		return;
+ 	}
+ 
+-	drm_fb_dma_sync_non_coherent(plane->dev, old_state, state);
++	vs_fb_sync_for_device(plane->dev, old_state, state);
+ 
+ 	vcrtc = drm_crtc_to_vs_crtc(crtc);
+ 	output = vcrtc->id;
+diff --git a/drivers/gpu/drm/verisilicon/vs_drm.c b/drivers/gpu/drm/verisilicon/vs_drm.c
+index c8d2205..1ce418a 100644
+--- a/drivers/gpu/drm/verisilicon/vs_drm.c
++++ b/drivers/gpu/drm/verisilicon/vs_drm.c
+@@ -121,6 +121,7 @@ int vs_drm_initialize(struct vs_dc *dc, struct platform_device *pdev)
+ 	struct vs_crtc *crtc;
+ 	struct vs_bridge *bridge;
+ 	unsigned int i;
++	bool dma_coherent, can_map_coherent;
+ 	int ret;
+ 
+ 	vdrm = devm_drm_dev_alloc(dev, &vs_drm_driver, struct vs_drm_dev, base);
+@@ -129,11 +130,13 @@ int vs_drm_initialize(struct vs_dc *dc, struct platform_device *pdev)
+ 
+ 	drm = &vdrm->base;
+ 	vdrm->dc = dc;
+-	vdrm->map_noncoherent = !of_dma_is_coherent(dev->of_node) &&
+-				!vs_drm_can_map_coherent();
++	dma_coherent = of_dma_is_coherent(dev->of_node);
++	can_map_coherent = vs_drm_can_map_coherent();
++	vdrm->map_noncoherent = !dma_coherent && !can_map_coherent;
+ 	dc->drm_dev = vdrm;
+-	if (vdrm->map_noncoherent)
+-		drm_info(drm, "using explicit cache maintenance for scanout\n");
++	drm_info(drm,
++		 "scanout cache maintenance: explicit=%u dma-coherent=%u uncached-mapping=%u\n",
++		 vdrm->map_noncoherent, dma_coherent, can_map_coherent);
+ 
+ 	ret = drmm_mode_config_init(drm);
+ 	if (ret)
+diff --git a/drivers/gpu/drm/verisilicon/vs_plane.c b/drivers/gpu/drm/verisilicon/vs_plane.c
+index 7ddb9d2..afd257e 100644
+--- a/drivers/gpu/drm/verisilicon/vs_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_plane.c
+@@ -4,15 +4,19 @@
+  */
+ 
+ #include <linux/errno.h>
++#include <linux/dma-mapping.h>
+ #include <linux/printk.h>
+ 
+ #include <drm/drm_atomic_state_helper.h>
++#include <drm/drm_damage_helper.h>
+ #include <drm/drm_fb_dma_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_gem_dma_helper.h>
+ #include <drm/drm_print.h>
+ 
+ #include "vs_plane.h"
++#include "vs_dc.h"
++#include "vs_drm.h"
+ 
+ int drm_format_to_vs_format(u32 drm_format, struct vs_format *vs_format)
+ {
+@@ -127,6 +131,53 @@ dma_addr_t vs_fb_get_dma_addr(struct drm_framebuffer *fb,
+ 	return dma_addr;
+ }
+ 
++void vs_fb_sync_for_device(struct drm_device *drm,
++			   struct drm_plane_state *old_state,
++			   struct drm_plane_state *state)
++{
++	struct drm_framebuffer *fb = state->fb;
++	struct drm_gem_dma_object *gem = drm_fb_dma_get_gem_obj(fb, 0);
++	struct device *dev = drm_dev_dma_dev(drm);
++	struct drm_atomic_helper_damage_iter iter;
++	struct drm_rect clip;
++	size_t offset, length;
++
++	if (!to_vs_drm_dev(drm)->map_noncoherent)
++		return;
++
++	/* PRIME imports deliberately have map_noncoherent == false. */
++	if (drm_gem_is_imported(&gem->base)) {
++		/* Match the direction used by drm_gem_prime_import_dev(). */
++		dma_sync_sgtable_for_device(dev, gem->sgt, DMA_BIDIRECTIONAL);
++		return;
++	}
++
++	if (!gem->map_noncoherent)
++		return;
++
++	/* Scene damage does not describe all cached writes to a new buffer. */
++	if (!old_state || old_state->fb != fb) {
++		dma_sync_single_for_device(dev, gem->dma_addr, gem->base.size,
++					   DMA_TO_DEVICE);
++		return;
++	}
++
++	/* All advertised primary/cursor formats are single-plane RGB. */
++	drm_atomic_helper_damage_iter_init(&iter, old_state, state);
++	drm_atomic_for_each_plane_damage(&iter, &clip) {
++		/* Damage coordinates are already relative to the framebuffer. */
++		offset = fb->offsets[0] + (size_t)clip.y1 * fb->pitches[0];
++		length = (size_t)(clip.y2 - clip.y1) * fb->pitches[0];
++		if (drm_WARN_ON_ONCE(drm, offset >= gem->base.size))
++			continue;
++
++		/* The final row need not include a complete stride of padding. */
++		length = min(length, gem->base.size - offset);
++		dma_sync_single_range_for_device(dev, gem->dma_addr, offset,
++						length, DMA_TO_DEVICE);
++	}
++}
++
+ struct drm_plane_state *vs_plane_duplicate_state(struct drm_plane *plane)
+ {
+ 	struct vs_plane_state *vs_state, *vs_state_old;
+diff --git a/drivers/gpu/drm/verisilicon/vs_plane.h b/drivers/gpu/drm/verisilicon/vs_plane.h
+index 32ed1d7..db38464 100644
+--- a/drivers/gpu/drm/verisilicon/vs_plane.h
++++ b/drivers/gpu/drm/verisilicon/vs_plane.h
+@@ -77,6 +77,9 @@ static inline struct vs_plane_state *to_vs_plane_state(struct drm_plane_state *s
+ int drm_format_to_vs_format(u32 drm_format, struct vs_format *vs_format);
+ dma_addr_t vs_fb_get_dma_addr(struct drm_framebuffer *fb,
+ 			      const struct drm_rect *src_rect);
++void vs_fb_sync_for_device(struct drm_device *drm,
++			   struct drm_plane_state *old_state,
++			   struct drm_plane_state *state);
+ 
+ struct drm_plane_state *vs_plane_duplicate_state(struct drm_plane *plane);
+ void vs_plane_destroy_state(struct drm_plane *plane,
+diff --git a/drivers/gpu/drm/verisilicon/vs_primary_plane.c b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+index 3c196ed..dd72836 100644
+--- a/drivers/gpu/drm/verisilicon/vs_primary_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+@@ -106,7 +106,7 @@ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+ 		return;
+ 	}
+ 
+-	drm_fb_dma_sync_non_coherent(plane->dev, old_state, state);
++	vs_fb_sync_for_device(plane->dev, old_state, state);
+ 
+ 	vcrtc = drm_crtc_to_vs_crtc(crtc);
+ 	output = vcrtc->id;
+-- 
+2.56.0
+

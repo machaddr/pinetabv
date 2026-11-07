@@ -1,0 +1,94 @@
+From bb9c354b9663d573dc9f0006ba0074fdac95dc18 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 23:24:00 +0100
+Subject: [PATCH] riscv: dts: starfive: fix PineTab-V audio topology
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The ES8316 supplies BCLK and LRCK to the separate JH7110 receive and
+transmit blocks over one physical I2S bus.  Describe the two CPU DAIs under
+one simple-card link, matching the board wiring and the vendor topology,
+while retaining schema-compliant cpu-0 and cpu-1 node names.
+
+The shared BCLK, LRCK and external 12.288 MHz MCLK pinctrl state currently
+belongs to the machine-card node.  That card defers until both CPU DAIs
+register, so the external clock pins are not configured when those DAIs
+probe.  Move the shared clock state to I2SRX, the first audio block in the
+SoC description, and leave the I2STX1 data pin with its controller.  This
+breaks the probe-order dependency and keeps clock pins configured for the
+lifetime of the audio devices.
+
+The external-MCLK direction remains unchanged: PineTab-V has a dedicated
+12.288 MHz oscillator which drives both ES8316 MCLK and JH7110 GPIO4.
+
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/arch/riscv/boot/dts/starfive/jh7110-pinetab-v.dtsi
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../starfive/jh7110-pine64-pinetab-v.dtsi     | 28 ++++++++------------
+ 1 file changed, 8 insertions(+), 20 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -225,8 +225,6 @@
+ 		compatible = "simple-audio-card";
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&i2s_clk_pins &i2s_mclk_ext_pins>;
+ 		simple-audio-card,name = "PineTab-V";
+ 		simple-audio-card,aux-devs = <&speaker_amp>;
+ 		simple-audio-card,hp-det-gpios = <&sysgpio 36 GPIO_ACTIVE_HIGH>;
+@@ -248,31 +246,19 @@
+ 		simple-audio-card,dai-link@0 {
+ 			reg = <0>;
+ 			format = "i2s";
+-			bitclock-master = <&es8316_playback>;
+-			frame-master = <&es8316_playback>;
++			bitclock-master = <&es8316_dai>;
++			frame-master = <&es8316_dai>;
+ 			mclk-fs = <256>;
+ 
+-			cpu {
+-				sound-dai = <&i2stx1>;
++			cpu-0 {
++				sound-dai = <&i2srx>;
+ 			};
+ 
+-			es8316_playback: codec {
+-				sound-dai = <&es8316>;
++			cpu-1 {
++				sound-dai = <&i2stx1>;
+ 			};
+-		};
+-
+-		simple-audio-card,dai-link@1 {
+-			reg = <1>;
+-			format = "i2s";
+-			bitclock-master = <&es8316_capture>;
+-			frame-master = <&es8316_capture>;
+-			mclk-fs = <256>;
+-
+-			cpu {
+-				sound-dai = <&i2srx>;
+-			};
+ 
+-			es8316_capture: codec {
++			es8316_dai: codec {
+ 				sound-dai = <&es8316>;
+ 			};
+ 		};
+@@ -742,7 +732,7 @@
+ 
+ &i2srx {
+ 	pinctrl-names = "default";
+-	pinctrl-0 = <&i2srx_pins>;
++	pinctrl-0 = <&i2s_clk_pins &i2s_mclk_ext_pins &i2srx_pins>;
+ 	status = "okay";
+ };
+ 
+-- 
+2.55.0

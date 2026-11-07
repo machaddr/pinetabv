@@ -1,0 +1,36 @@
+From 983084f354c4a874903ad553a2fa293c06157a06 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:32:25 +0100
+Subject: [PATCH 25/53] drm/panel: boe-th101: send the C0 initialization
+ command
+
+The TH101 initialization table sends the C0 payload with command 0x00.
+Use the C0 command selected by the reviewed U-Boot and StarFive panel
+implementations.
+
+Fixes: 420186db1483 ("drm/panel: Add driver for BOE TH101MB31IG002-28A panel")
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+index 01b4458e55ad9..14ef46534f3b2 100644
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -78,9 +78,9 @@ static int boe_th101mb31ig002_enable(struct boe_th101mb31ig002 *ctx)
+ 					       0x65, 0x55, 0x49, 0x46, 0x36, 0x3b, 0x24,
+ 					       0x3d, 0x3c, 0x3d, 0x5c, 0x4c, 0x55, 0x47,
+ 					       0x46, 0x39, 0x26, 0x06);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x00, 0xff, 0x87, 0x12, 0x34, 0x44, 0x44,
+-					       0x44, 0x44, 0x98, 0x04, 0x98, 0x04, 0x0f,
+-					       0x00, 0x00, 0xc1);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0xff, 0x87, 0x12, 0x34, 0x44, 0x44,
++				     0x44, 0x44, 0x98, 0x04, 0x98, 0x04, 0x0f,
++				     0x00, 0x00, 0xc1);
+ 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x54, 0x94, 0x02, 0x85, 0x9f, 0x00,
+ 					       0x7f, 0x00, 0x54, 0x00);
+ 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc2, 0x17, 0x09, 0x08, 0x89, 0x08, 0x11,
+-- 
+2.55.0
+

@@ -1,0 +1,109 @@
+From ec11a2ff67b8f63d1004ab86657eb8b252797532 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:13 +0100
+Subject: [PATCH 6/8] drm/verisilicon: manage an optional LCD output clock
+
+JH7110 has an LCD mux between the DC8200 output clocks and the
+video-output fabric. The vendor driver selects the active DC output as
+its parent and enables this clock; the generic driver does neither.
+
+Acquire the clock by its optional lcd name, select the active CRTC pixel
+clock as its parent, and keep its enable state paired with that CRTC.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/verisilicon/vs_bridge.c | 19 +++++++++++++++++++
+ drivers/gpu/drm/verisilicon/vs_bridge.h |  1 +
+ drivers/gpu/drm/verisilicon/vs_dc.c     |  7 +++++++
+ drivers/gpu/drm/verisilicon/vs_dc.h     |  1 +
+ 4 files changed, 28 insertions(+)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_bridge.c b/drivers/gpu/drm/verisilicon/vs_bridge.c
+index 2a0ad00a94d6d..07cfb5badcc00 100644
+--- a/drivers/gpu/drm/verisilicon/vs_bridge.c
++++ b/drivers/gpu/drm/verisilicon/vs_bridge.c
+@@ -3,6 +3,7 @@
+  * Copyright (C) 2025 Icenowy Zheng <uwu@icenowy.me>
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/of.h>
+ #include <linux/regmap.h>
+ 
+@@ -182,6 +183,19 @@ static void vs_bridge_atomic_enable_dpi(struct drm_bridge *bridge,
+ 	struct vs_crtc *crtc = vbridge->crtc;
+ 	struct vs_dc *dc = crtc->dc;
+ 	unsigned int output = crtc->id;
++	int ret;
++
++	if (dc->lcd_clk) {
++		ret = clk_set_parent(dc->lcd_clk, dc->pix_clk[output]);
++		if (drm_WARN_ON(bridge->dev, ret))
++			return;
++
++		ret = clk_prepare_enable(dc->lcd_clk);
++		if (drm_WARN_ON(bridge->dev, ret))
++			return;
++
++		vbridge->lcd_clk_enabled = true;
++	}
+ 
+ 	regmap_clear_bits(dc->regs, VSDC_DISP_DP_CONFIG(output),
+ 			  VSDC_DISP_DP_CONFIG_DP_EN);
+@@ -236,6 +250,11 @@ static void vs_bridge_atomic_disable(struct drm_bridge *bridge,
+ 
+ 	regmap_set_bits(dc->regs, VSDC_DISP_PANEL_CONFIG_EX(crtc->id),
+ 			VSDC_DISP_PANEL_CONFIG_EX_COMMIT);
++
++	if (vbridge->lcd_clk_enabled) {
++		clk_disable_unprepare(dc->lcd_clk);
++		vbridge->lcd_clk_enabled = false;
++	}
+ }
+ 
+ static const struct drm_bridge_funcs vs_dpi_bridge_funcs = {
+diff --git a/drivers/gpu/drm/verisilicon/vs_bridge.h b/drivers/gpu/drm/verisilicon/vs_bridge.h
+index 70fee1749699a..33f31f8a5107b 100644
+--- a/drivers/gpu/drm/verisilicon/vs_bridge.h
++++ b/drivers/gpu/drm/verisilicon/vs_bridge.h
+@@ -27,6 +27,7 @@ struct vs_bridge {
+ 	struct vs_crtc *crtc;
+ 	struct drm_bridge *next_bridge;
+ 	enum vs_bridge_output_interface intf;
++	bool lcd_clk_enabled;
+ };
+ 
+ static inline struct vs_bridge *drm_bridge_to_vs_bridge(struct drm_bridge *bridge)
+diff --git a/drivers/gpu/drm/verisilicon/vs_dc.c b/drivers/gpu/drm/verisilicon/vs_dc.c
+index dad9967bc10b8..cb45de79e2afa 100644
+--- a/drivers/gpu/drm/verisilicon/vs_dc.c
++++ b/drivers/gpu/drm/verisilicon/vs_dc.c
+@@ -152,6 +152,13 @@ static int vs_dc_probe(struct platform_device *pdev)
+ 		}
+ 	}
+ 
++	dc->lcd_clk = devm_clk_get_optional(dev, "lcd");
++	if (IS_ERR(dc->lcd_clk)) {
++		dev_err(dev, "can't get LCD output clock\n");
++		ret = PTR_ERR(dc->lcd_clk);
++		goto err_rst_assert;
++	}
++
+ 	ret = devm_request_irq(dev, irq, vs_dc_irq_handler, 0,
+ 			       dev_name(dev), dc);
+ 	if (ret) {
+diff --git a/drivers/gpu/drm/verisilicon/vs_dc.h b/drivers/gpu/drm/verisilicon/vs_dc.h
+index ed1016f18758e..6dc7ad69954a7 100644
+--- a/drivers/gpu/drm/verisilicon/vs_dc.h
++++ b/drivers/gpu/drm/verisilicon/vs_dc.h
+@@ -29,6 +29,7 @@ struct vs_dc {
+ 	struct clk *axi_clk;
+ 	struct clk *ahb_clk;
+ 	struct clk *pix_clk[VSDC_MAX_OUTPUTS];
++	struct clk *lcd_clk;
+ 	struct reset_control_bulk_data rsts[VSDC_RESET_COUNT];
+ 
+ 	struct vs_drm_dev *drm_dev;
+-- 
+2.55.0
+

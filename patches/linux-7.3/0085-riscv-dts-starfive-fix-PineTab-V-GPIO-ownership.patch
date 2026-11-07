@@ -1,0 +1,148 @@
+From 73af8abc8dad6fe204a5e977924bb7cf6c7889ad Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 12:15:00 +0100
+Subject: [PATCH] riscv: dts: starfive: fix PineTab-V GPIO ownership
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The JH7110 pin controller enforces strict GPIO and pinmux ownership.
+PineTab-V currently describes the microSD card-detect and camera-select
+lines both as GPIO consumer properties and as pins in each consumer's
+default pinctrl state.  The pinctrl requests therefore reserve GPIO41
+and GPIO53 before the consumer drivers can request them.  This prevents
+the SD controller from probing and leaves an SD-root boot waiting for
+its root device.  It also prevents the camera mux from probing.
+
+The two camera sensors have the same latent conflict for their reset and
+power-down GPIOs.  Let the GPIO descriptor consumers configure all of
+these GPIO-only lines and retain pinctrl states only for pins using SoC
+alternate functions.  Preserve the microSD card-detect pull-up in its
+GPIO flags.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../dts/starfive/jh7110-pine64-pinetab-v.dtsi | 65 +------------------
+ 1 file changed, 1 insertion(+), 64 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+index 63dbf611e..74d0fa70f 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -99,8 +99,6 @@
+ 		#mux-control-cells = <0>;
+ 		mux-gpios = <&sysgpio 53 GPIO_ACTIVE_HIGH>;
+ 		idle-state = <0>;
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&camera_selector_pins>;
+ 	};
+ 
+ 	camera_mux: video-mux {
+@@ -703,8 +701,6 @@
+ 		dvdd-supply = <&camera_io_1p8>;
+ 		reset-gpios = <&sysgpio 33 GPIO_ACTIVE_HIGH>;
+ 		powerdown-gpios = <&sysgpio 25 GPIO_ACTIVE_LOW>;
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&gc02m2_pins>;
+ 
+ 		port {
+ 			gc02m2_out: endpoint {
+@@ -727,8 +723,6 @@
+ 		DVDD-supply = <&camera_dvdd>;
+ 		powerdown-gpios = <&sysgpio 22 GPIO_ACTIVE_HIGH>;
+ 		reset-gpios = <&sysgpio 34 GPIO_ACTIVE_LOW>;
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&ov5640_pins>;
+ 		rotation = <0>;
+ 
+ 		port {
+@@ -829,7 +823,7 @@
+ 	assigned-clock-rates = <50000000>;
+ 	bus-width = <4>;
+ 	cap-sd-highspeed;
+-	cd-gpios = <&sysgpio 41 GPIO_ACTIVE_LOW>;
++	cd-gpios = <&sysgpio 41 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+ 	disable-wp;
+ 	no-mmc;
+ 	no-sdio;
+@@ -936,34 +930,6 @@
+ };
+ 
+ &sysgpio {
+-	camera_selector_pins: camera-selector-0 {
+-		mux-pins {
+-			pinmux = <GPIOMUX(53, GPOUT_LOW,
+-					      GPOEN_ENABLE,
+-					      GPI_NONE)>;
+-			bias-disable;
+-			input-disable;
+-		};
+-	};
+-
+-	gc02m2_pins: gc02m2-0 {
+-		powerdown-pins {
+-			pinmux = <GPIOMUX(25, GPOUT_HIGH,
+-					      GPOEN_ENABLE,
+-					      GPI_NONE)>;
+-			bias-disable;
+-			input-disable;
+-		};
+-
+-		reset-pins {
+-			pinmux = <GPIOMUX(33, GPOUT_HIGH,
+-					      GPOEN_ENABLE,
+-					      GPI_NONE)>;
+-			bias-disable;
+-			input-disable;
+-		};
+-	};
+-
+ 	fuel_gauge_pins: fuel-gauge-0 {
+ 		alert-pins {
+ 			pinmux = <GPIOMUX(60, GPOUT_LOW,
+@@ -1123,17 +1089,6 @@
+ 	};
+ 
+ 	mmc1_pins: mmc1-0 {
+-		cd-pins {
+-			pinmux = <GPIOMUX(41, GPOUT_LOW,
+-					      GPOEN_DISABLE,
+-					      GPI_NONE)>;
+-			bias-pull-up;
+-			drive-strength = <2>;
+-			input-enable;
+-			input-schmitt-enable;
+-			slew-rate = <0>;
+-		};
+-
+ 		clock-pins {
+ 			pinmux = <GPIOMUX(10, GPOUT_SYS_SDIO1_CLK,
+ 					      GPOEN_ENABLE,
+@@ -1147,24 +1102,6 @@
+ 		};
+ 	};
+ 
+-	ov5640_pins: ov5640-0 {
+-		powerdown-pins {
+-			pinmux = <GPIOMUX(22, GPOUT_HIGH,
+-					      GPOEN_ENABLE,
+-					      GPI_NONE)>;
+-			bias-disable;
+-			input-disable;
+-		};
+-
+-		reset-pins {
+-			pinmux = <GPIOMUX(34, GPOUT_HIGH,
+-					      GPOEN_ENABLE,
+-					      GPI_NONE)>;
+-			bias-disable;
+-			input-disable;
+-		};
+-	};
+-
+ 	pcie1_pins: pcie1-0 {
+ 		clkreq-wake-pins {
+ 			pinmux = <GPIOMUX(21, GPOUT_LOW,
+-- 
+2.55.0

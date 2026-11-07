@@ -1,0 +1,240 @@
+From 27ad04265f553f09df606d9617a31d6e033c73c5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:46:18 +0100
+Subject: [PATCH 14/53] drm/imagination: bound JH7110 heap guards to VM
+ lifetime
+
+The downstream JH7110 workaround currently allocates and maps two 4 MiB
+heap guards for every submit. The mappings persist until VM teardown, so
+every submit leaks 8 MiB and consumes more GPU virtual address space.
+
+Create the two mappings once per VM instead, serialize concurrent first
+submissions, roll back partial setup, and fail submission if the required
+workaround cannot be installed. Limit it to the exact JH7110 BVNC and make
+the module parameter load-time only.
+
+Install the guards before the deferred MMU flush so their page table
+changes are visible to the first submitted job. Handle every VM present in
+a multi-job submission rather than only the first one.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_job.c | 44 ++++++------------
+ drivers/gpu/drm/imagination/pvr_vm.c  | 85 ++++++++++++++++++++++++++++++++++-
+ drivers/gpu/drm/imagination/pvr_vm.h  |  2 +-
+ 3 files changed, 99 insertions(+), 32 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_job.c b/drivers/gpu/drm/imagination/pvr_job.c
+index e860007fa95bd66187bac6fc7915db7de8ad27a4..e16e80b398588b33ea1f7f511d94ec60889de30d 100644
+--- a/drivers/gpu/drm/imagination/pvr_job.c
++++ b/drivers/gpu/drm/imagination/pvr_job.c
+@@ -24,8 +24,10 @@
+ #include <linux/types.h>
+ #include <uapi/drm/pvr_drm.h>
+ 
+-static unsigned int kernel_heap_guards = 1;
+-module_param(kernel_heap_guards, uint, 0644);
++static bool kernel_heap_guards = true;
++module_param(kernel_heap_guards, bool, 0444);
++MODULE_PARM_DESC(kernel_heap_guards,
++		 "Map per-VM code-heap guards on JH7110 PowerVR GPUs");
+ 
+ static void pvr_job_release(struct kref *kref)
+ {
+@@ -741,6 +743,16 @@ pvr_submit_jobs(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
+ 
+ 	jobs_alloced = args->jobs.count;
+ 
++	if (kernel_heap_guards &&
++	    pvr_gpu_id_to_packed_bvnc(&pvr_dev->gpu_id) ==
++		    PVR_PACKED_BVNC(36, 50, 54, 182)) {
++		for (u32 i = 0; i < jobs_alloced; i++) {
++			err = pvr_vm_ensure_heap_guards(job_data[i].job->ctx->vm_ctx);
++			if (err)
++				goto out_job_data_cleanup;
++		}
++	}
++
+ 	/*
+ 	 * Flush MMU if needed - this has been deferred until now to avoid
+ 	 * overuse of this expensive operation.
+@@ -749,34 +761,6 @@ pvr_submit_jobs(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
+ 	if (err)
+ 		goto out_job_data_cleanup;
+ 
+-	/* 4 MiB heap guard. */
+-	if (kernel_heap_guards && jobs_alloced > 0 &&
+-	    job_data[0].job && job_data[0].job->ctx) {
+-		struct pvr_vm_context *vm_ctx = job_data[0].job->ctx->vm_ctx;
+-		const u64 GUARD_SIZE = 0x400000;
+-		const u64 heap_bases[] = {
+-			ROGUE_PDSCODEDATA_HEAP_BASE,
+-			ROGUE_USCCODE_HEAP_BASE,
+-		};
+-		size_t i;
+-
+-		for (i = 0; i < ARRAY_SIZE(heap_bases); i++) {
+-			const struct drm_pvr_heap *heap;
+-			struct pvr_gem_object *guard;
+-			u64 hwm;
+-
+-			heap = pvr_find_heap_containing(pvr_dev, heap_bases[i], 1);
+-			if (!vm_ctx || !heap)
+-				continue;
+-			hwm = pvr_vm_find_high_water_mark(vm_ctx, heap->base, heap->size);
+-			guard = pvr_gem_object_create(pvr_dev, GUARD_SIZE, 0);
+-			if (IS_ERR(guard))
+-				continue;
+-			(void)pvr_vm_map(vm_ctx, guard, 0, hwm, GUARD_SIZE);
+-			pvr_gem_object_put(guard);
+-		}
+-	}
+-
+ 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES, 0);
+ 
+ 	xa_init_flags(&signal_array, XA_FLAGS_ALLOC);
+diff --git a/drivers/gpu/drm/imagination/pvr_vm.c b/drivers/gpu/drm/imagination/pvr_vm.c
+index c3c3e2704471ab11ccba5b82452c81b53ba19398..5651104ba23fc67b7b2533eceb4f532b8b066bb6 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm.c
++++ b/drivers/gpu/drm/imagination/pvr_vm.c
+@@ -22,6 +22,7 @@
+ #include <linux/gfp_types.h>
+ #include <linux/kref.h>
+ #include <linux/mutex.h>
++#include <linux/sizes.h>
+ #include <linux/stddef.h>
+ 
+ /**
+@@ -50,6 +51,12 @@ struct pvr_vm_context {
+ 	/** @lock: Global lock on this VM. */
+ 	struct mutex lock;
+ 
++	/** @heap_guard_lock: Serializes one-time code-heap guard setup. */
++	struct mutex heap_guard_lock;
++
++	/** @heap_guards_mapped: Whether code-heap guards have been mapped. */
++	bool heap_guards_mapped;
++
+ 	/**
+ 	 * @fw_mem_ctx_obj: Firmware object representing firmware memory
+ 	 * context.
+@@ -592,6 +599,7 @@ pvr_vm_create_context(struct pvr_device *pvr_dev, bool is_userspace_context)
+ 		       0, 1ULL << device_addr_bits, 0, 0, &pvr_vm_gpuva_ops);
+ 
+ 	mutex_init(&vm_ctx->lock);
++	mutex_init(&vm_ctx->heap_guard_lock);
+ 	kref_init(&vm_ctx->ref_count);
+ 
+ 	return vm_ctx;
+@@ -625,6 +633,7 @@ pvr_vm_context_release(struct kref *ref_count)
+ 
+ 	pvr_mmu_context_destroy(vm_ctx->mmu_ctx);
+ 	drm_gem_private_object_fini(&vm_ctx->dummy_gem);
++	mutex_destroy(&vm_ctx->heap_guard_lock);
+ 	mutex_destroy(&vm_ctx->lock);
+ 
+ 	drm_gpuvm_put(&vm_ctx->gpuvm_mgr);
+@@ -908,7 +917,7 @@ pvr_vm_unmap_all(struct pvr_vm_context *vm_ctx)
+ 	mutex_unlock(&vm_ctx->lock);
+ }
+ 
+-u64
++static u64
+ pvr_vm_find_high_water_mark(struct pvr_vm_context *vm_ctx, u64 base, u64 range)
+ {
+ 	struct drm_gpuva *va;
+@@ -926,6 +935,80 @@ pvr_vm_find_high_water_mark(struct pvr_vm_context *vm_ctx, u64 base, u64 range)
+ 	return hwm;
+ }
+ 
++/**
++ * pvr_vm_ensure_heap_guards() - Map code-heap guards for a VM.
++ * @vm_ctx: Target VM context.
++ *
++ * The JH7110 firmware requires a 4 MiB padding mapping after the used portion
++ * of both code heaps. Guard setup is serialized and performed only
++ * once, immediately before the VM's first job is submitted. The mappings are
++ * owned by the VM and released by pvr_vm_unmap_all().
++ *
++ * Return:
++ *  * 0 on success, or if the guards were already mapped,
++ *  * -%ENOSPC if a guard does not fit in its heap, or
++ *  * Any error returned by pvr_gem_object_create() or pvr_vm_map().
++ */
++int
++pvr_vm_ensure_heap_guards(struct pvr_vm_context *vm_ctx)
++{
++	static const u64 heap_bases[] = {
++		ROGUE_PDSCODEDATA_HEAP_BASE,
++		ROGUE_USCCODE_HEAP_BASE,
++	};
++	u64 mapped_addrs[ARRAY_SIZE(heap_bases)];
++	u32 mapped_count = 0;
++	int err = 0;
++
++	mutex_lock(&vm_ctx->heap_guard_lock);
++
++	if (vm_ctx->heap_guards_mapped)
++		goto out_unlock;
++
++	for (u32 i = 0; i < ARRAY_SIZE(heap_bases); i++) {
++		const struct drm_pvr_heap *heap;
++		struct pvr_gem_object *guard;
++		u64 addr;
++
++		heap = pvr_find_heap_containing(vm_ctx->pvr_dev, heap_bases[i], 1);
++		if (!heap) {
++			err = -EINVAL;
++			goto err_unmap;
++		}
++
++		addr = pvr_vm_find_high_water_mark(vm_ctx, heap->base, heap->size);
++		if (pvr_find_heap_containing(vm_ctx->pvr_dev, addr, SZ_4M) != heap) {
++			err = -ENOSPC;
++			goto err_unmap;
++		}
++
++		guard = pvr_gem_object_create(vm_ctx->pvr_dev, SZ_4M, 0);
++		if (IS_ERR(guard)) {
++			err = PTR_ERR(guard);
++			goto err_unmap;
++		}
++
++		err = pvr_vm_map(vm_ctx, guard, 0, addr, SZ_4M);
++		pvr_gem_object_put(guard);
++		if (err)
++			goto err_unmap;
++
++		mapped_addrs[mapped_count++] = addr;
++	}
++
++	vm_ctx->heap_guards_mapped = true;
++	goto out_unlock;
++
++err_unmap:
++	while (mapped_count)
++		WARN_ON(pvr_vm_unmap(vm_ctx, mapped_addrs[--mapped_count], SZ_4M));
++
++out_unlock:
++	mutex_unlock(&vm_ctx->heap_guard_lock);
++
++	return err;
++}
++
+ /* Static data areas are determined by firmware. */
+ static const struct drm_pvr_static_data_area static_data_areas[] = {
+ 	{
+diff --git a/drivers/gpu/drm/imagination/pvr_vm.h b/drivers/gpu/drm/imagination/pvr_vm.h
+index 02c51d388f3476bdb269122c09e900450d5ae8a7..b2f1508ce74a0e240abe2accd6939538e2fa7408 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm.h
++++ b/drivers/gpu/drm/imagination/pvr_vm.h
+@@ -67,6 +67,6 @@ struct pvr_vm_context *pvr_vm_context_get(struct pvr_vm_context *vm_ctx);
+ bool pvr_vm_context_put(struct pvr_vm_context *vm_ctx);
+ void pvr_destroy_vm_contexts_for_file(struct pvr_file *pvr_file);
+ 
+-u64 pvr_vm_find_high_water_mark(struct pvr_vm_context *vm_ctx, u64 base, u64 range);
++int pvr_vm_ensure_heap_guards(struct pvr_vm_context *vm_ctx);
+ 
+ #endif /* PVR_VM_H */
+-- 
+2.53.0

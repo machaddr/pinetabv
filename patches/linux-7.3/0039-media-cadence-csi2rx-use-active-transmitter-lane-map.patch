@@ -1,0 +1,202 @@
+From 3c499e10158e4b48b06f64c58fb3ce4703a67692 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:49:27 +0100
+Subject: [PATCH 39/53] media: cadence: csi2rx: use active transmitter lane map
+
+A receiver can be wired through a video mux whose selected transmitter
+uses a subset or a different ordering of the receiver endpoint lanes.
+Query get_mbus_config at first stream start and use both its lane count
+and exact map for the Cadence static configuration, D-PHY lane enables
+and link-rate calculation.
+
+Transmitters that only report a lane count retain the corresponding
+prefix of the receiver firmware map. Fall back to the full firmware
+endpoint when no active configuration is available.
+
+While making the map local to stream startup, fix the unused-lane fill
+code to track zero-based bitmap positions and program the physical lane
+it actually selected.
+
+Assisted-by: Codex:gpt-5
+---
+
+diff --git a/drivers/media/platform/cadence/cdns-csi2rx.c b/drivers/media/platform/cadence/cdns-csi2rx.c
+--- a/drivers/media/platform/cadence/cdns-csi2rx.c
++++ b/drivers/media/platform/cadence/cdns-csi2rx.c
+@@ -272,7 +272,93 @@
+ 		writel(0, csi2rx->base + CSI2RX_STREAM_CTRL_REG(i));
+ }
+ 
+-static int csi2rx_configure_ext_dphy(struct csi2rx_priv *csi2rx)
++static int csi2rx_get_active_lanes(struct csi2rx_priv *csi2rx,
++				   u8 *active_lanes, u8 *active_num_lanes)
++{
++	struct v4l2_mbus_config mbus_config = {};
++	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
++	unsigned long wired_lanes = 0;
++	unsigned long used_lanes = 0;
++	bool has_lane_map = false;
++	unsigned int i;
++	int ret;
++
++	memcpy(active_lanes, csi2rx->lanes, sizeof(csi2rx->lanes));
++	*active_num_lanes = csi2rx->num_lanes;
++
++	ret = v4l2_subdev_call(csi2rx->source_subdev, pad,
++			       get_mbus_config, csi2rx->source_pad,
++			       &mbus_config);
++	if (ret == -ENOIOCTLCMD)
++		return 0;
++	if (ret)
++		return ret;
++
++	mipi_csi2 = &mbus_config.bus.mipi_csi2;
++	if (!mipi_csi2->num_data_lanes)
++		return 0;
++
++	if (mbus_config.type != V4L2_MBUS_CSI2_DPHY) {
++		dev_err(csi2rx->dev, "Unsupported active media bus type: 0x%x\n",
++			mbus_config.type);
++		return -EINVAL;
++	}
++
++	if (mipi_csi2->num_data_lanes > csi2rx->num_lanes) {
++		dev_err(csi2rx->dev,
++			"Active data lanes (%u) exceed wired data lanes (%u)\n",
++			mipi_csi2->num_data_lanes, csi2rx->num_lanes);
++		return -EINVAL;
++	}
++
++	for (i = 0; i < csi2rx->num_lanes; i++) {
++		u8 lane = csi2rx->lanes[i];
++
++		if (!lane || lane > csi2rx->max_lanes ||
++		    test_and_set_bit(lane - 1, &wired_lanes)) {
++			dev_err(csi2rx->dev,
++				"Firmware data lane %u is invalid or duplicated\n",
++				lane);
++			return -EINVAL;
++		}
++	}
++
++	for (i = 0; i < mipi_csi2->num_data_lanes; i++)
++		has_lane_map |= !!mipi_csi2->data_lanes[i];
++
++	if (!has_lane_map)
++		goto done;
++
++	for (i = 0; i < mipi_csi2->num_data_lanes; i++) {
++		u8 lane = mipi_csi2->data_lanes[i];
++
++		if (!lane || lane > csi2rx->max_lanes ||
++		    !test_bit(lane - 1, &wired_lanes)) {
++			dev_err(csi2rx->dev, "Active data lane %u is not wired\n",
++				lane);
++			return -EINVAL;
++		}
++
++		if (test_and_set_bit(lane - 1, &used_lanes)) {
++			dev_err(csi2rx->dev, "Active data lane %u is duplicated\n",
++				lane);
++			return -EINVAL;
++		}
++
++		active_lanes[i] = lane;
++	}
++
++done:
++	*active_num_lanes = mipi_csi2->num_data_lanes;
++
++	dev_dbg(csi2rx->dev, "Using %u active CSI-2 data lane%s\n",
++		*active_num_lanes, *active_num_lanes == 1 ? "" : "s");
++
++	return 0;
++}
++
++static int csi2rx_configure_ext_dphy(struct csi2rx_priv *csi2rx,
++				     u8 num_lanes)
+ {
+ 	union phy_configure_opts opts = { };
+ 	struct phy_configure_opts_mipi_dphy *cfg = &opts.mipi_dphy;
+@@ -309,14 +395,14 @@
+ 		bpp = fmt->bpp;
+ 	}
+ 
+-	link_freq = v4l2_get_link_freq(pad, bpp, 2 * csi2rx->num_lanes);
++	link_freq = v4l2_get_link_freq(pad, bpp, 2 * num_lanes);
+ 	if (link_freq < 0) {
+ 		dev_err(csi2rx->dev, "Unable to calculate link frequency\n");
+ 		return link_freq;
+ 	}
+ 
+ 	ret = phy_mipi_dphy_get_default_config_for_hsclk(link_freq,
+-							 csi2rx->num_lanes, cfg);
++							 num_lanes, cfg);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -337,18 +423,25 @@
+ {
+ 	unsigned int i;
+ 	unsigned long lanes_used = 0;
++	u8 active_lanes[CSI2RX_LANES_MAX];
++	u8 active_num_lanes;
+ 	u32 reg;
+ 	int ret;
+ 
++	ret = csi2rx_get_active_lanes(csi2rx, active_lanes,
++				      &active_num_lanes);
++	if (ret)
++		return ret;
++
+ 	csi2rx_reset(csi2rx);
+ 
+ 	if (csi2rx->error_irq >= 0)
+ 		csi2rx_configure_error_irq_mask(csi2rx->base, csi2rx);
+ 
+-	reg = csi2rx->num_lanes << 8;
+-	for (i = 0; i < csi2rx->num_lanes; i++) {
+-		reg |= CSI2RX_STATIC_CFG_DLANE_MAP(i, csi2rx->lanes[i]);
+-		set_bit(csi2rx->lanes[i], &lanes_used);
++	reg = active_num_lanes << 8;
++	for (i = 0; i < active_num_lanes; i++) {
++		reg |= CSI2RX_STATIC_CFG_DLANE_MAP(i, active_lanes[i]);
++		set_bit(active_lanes[i] - 1, &lanes_used);
+ 	}
+ 
+ 	/*
+@@ -357,11 +450,11 @@
+ 	 * in the previous loop, and only map unused physical lanes to
+ 	 * the rest of our logical lanes.
+ 	 */
+-	for (i = csi2rx->num_lanes; i < csi2rx->max_lanes; i++) {
++	for (i = active_num_lanes; i < csi2rx->max_lanes; i++) {
+ 		unsigned int idx = find_first_zero_bit(&lanes_used,
+ 						       csi2rx->max_lanes);
+ 		set_bit(idx, &lanes_used);
+-		reg |= CSI2RX_STATIC_CFG_DLANE_MAP(i, i + 1);
++		reg |= CSI2RX_STATIC_CFG_DLANE_MAP(i, idx + 1);
+ 	}
+ 
+ 	writel(reg, csi2rx->base + CSI2RX_STATIC_CFG_REG);
+@@ -369,14 +462,14 @@
+ 	/* Enable DPHY clk and data lanes. */
+ 	if (csi2rx->dphy) {
+ 		reg = CSI2RX_DPHY_CL_EN | CSI2RX_DPHY_CL_RST;
+-		for (i = 0; i < csi2rx->num_lanes; i++) {
+-			reg |= CSI2RX_DPHY_DL_EN(csi2rx->lanes[i] - 1);
+-			reg |= CSI2RX_DPHY_DL_RST(csi2rx->lanes[i] - 1);
++		for (i = 0; i < active_num_lanes; i++) {
++			reg |= CSI2RX_DPHY_DL_EN(active_lanes[i] - 1);
++			reg |= CSI2RX_DPHY_DL_RST(active_lanes[i] - 1);
+ 		}
+ 
+ 		writel(reg, csi2rx->base + CSI2RX_DPHY_LANE_CTRL_REG);
+ 
+-		ret = csi2rx_configure_ext_dphy(csi2rx);
++		ret = csi2rx_configure_ext_dphy(csi2rx, active_num_lanes);
+ 		if (ret) {
+ 			dev_err(csi2rx->dev,
+ 				"Failed to configure external DPHY: %d\n", ret);
+-- 
+2.53.0

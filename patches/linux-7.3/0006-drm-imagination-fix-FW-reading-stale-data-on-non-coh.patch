@@ -1,0 +1,63 @@
+From a0f857ea28c2dcc2c60750e89ac5402c5393b475 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Tue, 28 Apr 2026 17:54:49 -0400
+Subject: [PATCH 06/53] drm/imagination: fix FW reading stale data on
+ non-coherent HW
+
+Synchronize client CCB control and command buffers for the device
+before firmware consumption. Without these syncs a non-coherent JH7110
+GPU can observe stale queue state.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_cccb.c | 8 +++++++-
+ drivers/gpu/drm/imagination/pvr_fw.c   | 6 +++++-
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_cccb.c b/drivers/gpu/drm/imagination/pvr_cccb.c
+index 4fabab41bea79016d9cc596149d18811f4e2e20b..f203f27cfebb58b23613e3cf2d035b9321dcab3a 100644
+--- a/drivers/gpu/drm/imagination/pvr_cccb.c
++++ b/drivers/gpu/drm/imagination/pvr_cccb.c
+@@ -232,6 +232,8 @@ pvr_cccb_send_kccb_kick(struct pvr_device *pvr_dev,
+ 
+ 	fill_cmd_kick_data(pvr_cccb, cctx_fw_addr, hwrt, &cmd_kick.cmd_data.cmd_kick_data);
+ 
++	pvr_fw_object_sync_all_for_device(from_pvr_device(pvr_dev)->dev,
++					  pvr_cccb->cccb_obj);
+ 	/* Make sure the writes to the CCCB are flushed before sending the KICK. */
+ 	wmb();
+ 
+@@ -260,7 +262,11 @@ pvr_cccb_send_kccb_combined_kick(struct pvr_device *pvr_dev,
+ 	fill_cmd_kick_data(frag_cccb, frag_ctx_fw_addr, frag_is_pr ? NULL : hwrt,
+ 			   &cmd_kick.cmd_data.combined_geom_frag_cmd_kick_data.frag_cmd_kick_data);
+ 
+-	/* Make sure the writes to the CCCB are flushed before sending the KICK. */
++	/* Make sure the writes to the CCCBs are flushed before sending the KICK. */
++	pvr_fw_object_sync_all_for_device(from_pvr_device(pvr_dev)->dev,
++					  geom_cccb->cccb_obj);
++	pvr_fw_object_sync_all_for_device(from_pvr_device(pvr_dev)->dev,
++					  frag_cccb->cccb_obj);
+ 	wmb();
+ 
+ 	pvr_kccb_send_cmd_reserved_powered(pvr_dev, &cmd_kick, NULL);
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.c b/drivers/gpu/drm/imagination/pvr_fw.c
+index e6c975a89efe6f498f393cf9ac0d80c59a09fb7b..03b13e97445d853b8bbcf1bdd175d444d489e2d3 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.c
++++ b/drivers/gpu/drm/imagination/pvr_fw.c
+@@ -1303,9 +1303,13 @@ pvr_fw_object_create_and_map_common(struct pvr_device *pvr_dev, size_t size,
+ 
+ 	*fw_obj_out = fw_obj;
+ 
+-	if (fw_obj->init)
++	if (fw_obj->init) {
+ 		fw_obj->init(cpu_ptr, fw_obj->init_priv);
+ 
++		pvr_fw_object_sync_all_for_device(from_pvr_device(pvr_dev)->dev,
++						  fw_obj);
++	}
++
+ 	mutex_lock(&pvr_dev->fw_dev.fw_objs.lock);
+ 	list_add_tail(&fw_obj->node, &pvr_dev->fw_dev.fw_objs.list);
+ 	mutex_unlock(&pvr_dev->fw_dev.fw_objs.lock);
+-- 
+2.53.0

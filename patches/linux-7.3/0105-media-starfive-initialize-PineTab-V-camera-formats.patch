@@ -1,0 +1,173 @@
+From 21af5dff627b360501a5dc9ad3e2bf23569233be Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Thu, 27 Aug 2026 10:20:00 +0100
+Subject: [PATCH] media: starfive: initialize PineTab-V camera formats
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The PineTab-V default route currently starts with incompatible active
+formats: the GC02M2 produces 1280x720 SRGGB10, video-mux uses a 1x1 Y8
+placeholder, Cadence CSI-2 RX uses 640x480 UYVY and the StarFive ISP uses
+1920x1080 SRGGB10.  Applications that open the enabled capture_yuv route
+without first configuring every subdevice consequently fail validation or
+receive no useful frames.
+
+When video-mux has an explicit default-input, copy that sensor's active
+format into the selected sink before enabling the link.  Initialize the
+Cadence CSI receiver from its bound source, and initialize the StarFive ISP
+from the CSI source selected by the firmware graph.  These remain normal
+mutable active formats, so media-controller applications can replace them.
+
+Do not assume that the CSI receiver output is always pad one.
+Return stream errors from the ISP instead of reporting success and leaving
+userspace with an unexplained black frame.
+
+Link: https://www.kernel.org/doc/html/next/admin-guide/media/starfive_camss.html
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/media/platform/cadence/cdns-csi2rx.c     | 14 ++++++++++++++
+ drivers/media/platform/video-mux.c               | 20 ++++++++++++++++++++
+ drivers/staging/media/starfive/camss/stf-camss.c | 22 +++++++++++++++++++++-
+ drivers/staging/media/starfive/camss/stf-isp.c   |  6 ++++--
+ 4 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/platform/cadence/cdns-csi2rx.c b/drivers/media/platform/cadence/cdns-csi2rx.c
+--- a/drivers/media/platform/cadence/cdns-csi2rx.c
++++ b/drivers/media/platform/cadence/cdns-csi2rx.c
+@@ -735,6 +735,10 @@ static int csi2rx_async_bound(struct v4l2_async_notifier *notifier,
+ {
+ 	struct v4l2_subdev *subdev = notifier->sd;
+ 	struct csi2rx_priv *csi2rx = v4l2_subdev_to_csi2rx(subdev);
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	int ret;
+ 
+ 	csi2rx->source_pad = media_entity_get_fwnode_pad(&s_subdev->entity,
+ 							 asd->match.fwnode,
+@@ -751,6 +755,16 @@ static int csi2rx_async_bound(struct v4l2_async_notifier *notifier,
+ 	dev_dbg(csi2rx->dev, "Bound %s pad: %d\n", s_subdev->name,
+ 		csi2rx->source_pad);
+ 
++	format.pad = csi2rx->source_pad;
++	ret = v4l2_subdev_call_state_active(s_subdev, pad, get_fmt, &format);
++	if (ret)
++		return ret;
++
++	format.pad = CSI2RX_PAD_SINK;
++	ret = v4l2_subdev_call_state_active(subdev, pad, set_fmt, &format);
++	if (ret)
++		return ret;
++
+ 	return media_create_pad_link(&csi2rx->source_subdev->entity,
+ 				     csi2rx->source_pad,
+ 				     &csi2rx->subdev.entity, 0,
+diff --git a/drivers/media/platform/video-mux.c b/drivers/media/platform/video-mux.c
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -431,7 +431,12 @@ static int video_mux_notify_bound(struct v4l2_async_notifier *notifier,
+ static int video_mux_notify_complete(struct v4l2_async_notifier *notifier)
+ {
+ 	struct video_mux *vmux = notifier_to_video_mux(notifier);
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
++	struct v4l2_subdev *source_sd;
+ 	struct media_link *link;
++	int ret;
+ 
+ 	if (vmux->default_input < 0)
+ 		return 0;
+@@ -441,6 +446,22 @@ static int video_mux_notify_complete(struct v4l2_async_notifier *notifier)
+ 		if (link->sink != &vmux->pads[vmux->default_input])
+ 			continue;
+ 
++		if (!is_media_entity_v4l2_subdev(link->source->entity))
++			return -ENODEV;
++
++		source_sd = media_entity_to_v4l2_subdev(link->source->entity);
++		format.pad = link->source->index;
++		ret = v4l2_subdev_call_state_active(source_sd, pad, get_fmt,
++						    &format);
++		if (ret)
++			return ret;
++
++		format.pad = vmux->default_input;
++		ret = v4l2_subdev_call_state_active(&vmux->subdev, pad, set_fmt,
++						    &format);
++		if (ret)
++			return ret;
++
+ 		return media_entity_setup_link(link,
+ 					       link->flags | MEDIA_LNK_FL_ENABLED);
+ 	}
+diff --git a/drivers/staging/media/starfive/camss/stf-camss.c b/drivers/staging/media/starfive/camss/stf-camss.c
+--- a/drivers/staging/media/starfive/camss/stf-camss.c
++++ b/drivers/staging/media/starfive/camss/stf-camss.c
+@@ -181,7 +181,11 @@ static int stfcamss_subdev_notifier_bound(struct v4l2_async_notifier *async,
+ 	enum stf_port_num port = csd->port;
+ 	struct stf_isp_dev *isp_dev = &stfcamss->isp_dev;
+ 	struct stf_capture *cap_raw = &stfcamss->captures[STF_CAPTURE_RAW];
++	struct v4l2_subdev_format format = {
++		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
++	};
+ 	struct media_pad *pad;
++	int source_pad;
+ 	int ret;
+ 
+ 	if (port == STF_PORT_CSI2RX) {
+@@ -200,7 +204,24 @@ static int stfcamss_subdev_notifier_bound(struct v4l2_async_notifier *async,
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = media_create_pad_link(&subdev->entity, 1,
++	source_pad = media_entity_get_fwnode_pad(&subdev->entity,
++						 asc->match.fwnode,
++						MEDIA_PAD_FL_SOURCE);
++	if (source_pad < 0)
++		return source_pad;
++
++	format.pad = source_pad;
++	ret = v4l2_subdev_call_state_active(subdev, pad, get_fmt, &format);
++	if (ret)
++		return ret;
++
++	format.pad = STF_ISP_PAD_SINK;
++	ret = v4l2_subdev_call_state_active(&isp_dev->subdev, pad, set_fmt,
++					    &format);
++	if (ret)
++		return ret;
++
++	ret = media_create_pad_link(&subdev->entity, source_pad,
+ 				    &cap_raw->video.vdev.entity, 0, 0);
+ 	if (ret)
+ 		return ret;
+diff --git a/drivers/staging/media/starfive/camss/stf-isp.c b/drivers/staging/media/starfive/camss/stf-isp.c
+--- a/drivers/staging/media/starfive/camss/stf-isp.c
++++ b/drivers/staging/media/starfive/camss/stf-isp.c
+@@ -65,6 +65,7 @@ static int isp_set_stream(struct v4l2_subdev *sd, int enable)
+ 	struct v4l2_subdev_state *sd_state;
+ 	struct v4l2_mbus_framefmt *fmt;
+ 	struct v4l2_rect *crop;
++	int ret;
+ 
+ 	sd_state = v4l2_subdev_lock_and_get_active_state(sd);
+ 	fmt = v4l2_subdev_state_get_format(sd_state, STF_ISP_PAD_SINK);
+@@ -77,10 +78,11 @@ static int isp_set_stream(struct v4l2_subdev *sd, int enable)
+ 		stf_isp_stream_set(isp_dev);
+ 	}
+ 
+-	v4l2_subdev_call(isp_dev->source_subdev, video, s_stream, enable);
++	ret = v4l2_subdev_call(isp_dev->source_subdev, video, s_stream, enable);
+ 
+ 	v4l2_subdev_unlock_state(sd_state);
+-	return 0;
++
++	return ret;
+ }
+ 
+ static void isp_try_format(struct stf_isp_dev *isp_dev,
+-- 
+2.55.0

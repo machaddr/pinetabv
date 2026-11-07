@@ -1,0 +1,221 @@
+From 4914a987369085d5fb83ab7a73242c0a5decfab0 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Thu, 30 Apr 2026 18:06:06 -0400
+Subject: [PATCH 07/53] drm/imagination: enable dispatch for every queue type
+
+Create and map the firmware objects needed by compute, transfer,
+fragment, and geometry queues. Share the lifetime and cleanup paths so
+each queue type can dispatch through the same VM safely.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_fw.c      | 31 ++++++++++++++++++++++++++++
+ drivers/gpu/drm/imagination/pvr_fw.h      |  1 +
+ drivers/gpu/drm/imagination/pvr_job.c     | 34 +++++++++++++++++++++++++++++++
+ drivers/gpu/drm/imagination/pvr_queue.c   |  3 +++
+ drivers/gpu/drm/imagination/pvr_vm.c      | 18 ++++++++++++++++
+ drivers/gpu/drm/imagination/pvr_vm.h      |  2 ++
+ drivers/gpu/drm/imagination/pvr_vm_mips.c |  4 ++++
+ 7 files changed, 93 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.c b/drivers/gpu/drm/imagination/pvr_fw.c
+index 03b13e97445d853b8bbcf1bdd175d444d489e2d3..37b8204c605fd8a81c14fc35199a42d8d95c4851 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.c
++++ b/drivers/gpu/drm/imagination/pvr_fw.c
+@@ -421,6 +421,8 @@ fw_sysdata_init(void *cpu_ptr, void *priv)
+ 	if (slc_size_in_kilobytes < ROGUE_FWIF_SLC_MIN_SIZE_FOR_DM_OVERLAP_KB)
+ 		config_flags |= ROGUE_FWIF_INICFG_DISABLE_DM_OVERLAP;
+ 
++	config_flags |= ROGUE_FWIF_INICFG_POW_RASCALDUST;
++
+ 	fwif_sysdata->config_flags = config_flags;
+ }
+ 
+@@ -927,6 +929,35 @@ pvr_fw_validate_init_device_info(struct pvr_device *pvr_dev)
+ 	return pvr_fw_get_device_info(pvr_dev);
+ }
+ 
++/* Re-program PDS and USC code bases after POW_RASCALDUST wipeout */
++void
++pvr_fw_program_heap_bases(struct pvr_device *pvr_dev)
++{
++	/* PDS code base for all DMs */
++	pvr_cr_write32(pvr_dev, 0x00610,
++		       (u32)(ROGUE_PDSCODEDATA_HEAP_BASE & 0xFFFFFFFFU));
++	pvr_cr_write32(pvr_dev, 0x00614,
++		       (u32)(ROGUE_PDSCODEDATA_HEAP_BASE >> 32));
++
++	/* USC code base for transfer queue */
++	pvr_cr_write32(pvr_dev, 0x04008,
++		       (u32)(ROGUE_USCCODE_HEAP_BASE & 0xFFFFFFFFU));
++	pvr_cr_write32(pvr_dev, 0x0400c,
++		       (u32)(ROGUE_USCCODE_HEAP_BASE >> 32));
++
++	/* USC code base for graphics */
++	pvr_cr_write32(pvr_dev, 0x04010,
++		       (u32)(ROGUE_USCCODE_HEAP_BASE & 0xFFFFFFFFU));
++	pvr_cr_write32(pvr_dev, 0x04014,
++		       (u32)(ROGUE_USCCODE_HEAP_BASE >> 32));
++
++	/* USC code base for compute */
++	pvr_cr_write32(pvr_dev, 0x04028,
++		       (u32)(ROGUE_USCCODE_HEAP_BASE & 0xFFFFFFFFU));
++	pvr_cr_write32(pvr_dev, 0x0402c,
++		       (u32)(ROGUE_USCCODE_HEAP_BASE >> 32));
++}
++
+ /**
+  * pvr_fw_init() - Initialise and boot firmware
+  * @pvr_dev: Target PowerVR device
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.h b/drivers/gpu/drm/imagination/pvr_fw.h
+index ba3a84a689a07811ed966b661db42baed72727e9..cfe807ff885798a5d0caa5410a57f2225fc6d588 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.h
++++ b/drivers/gpu/drm/imagination/pvr_fw.h
+@@ -402,6 +402,7 @@ extern const struct pvr_fw_defs pvr_fw_defs_riscv;
+ int pvr_fw_validate_init_device_info(struct pvr_device *pvr_dev);
+ int pvr_fw_init(struct pvr_device *pvr_dev);
+ void pvr_fw_fini(struct pvr_device *pvr_dev);
++void pvr_fw_program_heap_bases(struct pvr_device *pvr_dev);
+ 
+ int pvr_wait_for_fw_boot(struct pvr_device *pvr_dev);
+ 
+diff --git a/drivers/gpu/drm/imagination/pvr_job.c b/drivers/gpu/drm/imagination/pvr_job.c
+index b8a58d817009b69db90c05231e7870209d0baf73..e860007fa95bd66187bac6fc7915db7de8ad27a4 100644
+--- a/drivers/gpu/drm/imagination/pvr_job.c
++++ b/drivers/gpu/drm/imagination/pvr_job.c
+@@ -11,16 +11,22 @@
+ #include "pvr_power.h"
+ #include "pvr_rogue_fwif.h"
+ #include "pvr_rogue_fwif_client.h"
++#include "pvr_rogue_heap_config.h"
+ #include "pvr_stream.h"
+ #include "pvr_stream_defs.h"
+ #include "pvr_sync.h"
+ #include "pvr_trace.h"
++#include "pvr_vm.h"
+ 
+ #include <drm/drm_exec.h>
+ #include <drm/drm_gem.h>
++#include <linux/moduleparam.h>
+ #include <linux/types.h>
+ #include <uapi/drm/pvr_drm.h>
+ 
++static unsigned int kernel_heap_guards = 1;
++module_param(kernel_heap_guards, uint, 0644);
++
+ static void pvr_job_release(struct kref *kref)
+ {
+ 	struct pvr_job *job = container_of(kref, struct pvr_job, ref_count);
+@@ -743,6 +749,34 @@ pvr_submit_jobs(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
+ 	if (err)
+ 		goto out_job_data_cleanup;
+ 
++	/* 4 MiB heap guard. */
++	if (kernel_heap_guards && jobs_alloced > 0 &&
++	    job_data[0].job && job_data[0].job->ctx) {
++		struct pvr_vm_context *vm_ctx = job_data[0].job->ctx->vm_ctx;
++		const u64 GUARD_SIZE = 0x400000;
++		const u64 heap_bases[] = {
++			ROGUE_PDSCODEDATA_HEAP_BASE,
++			ROGUE_USCCODE_HEAP_BASE,
++		};
++		size_t i;
++
++		for (i = 0; i < ARRAY_SIZE(heap_bases); i++) {
++			const struct drm_pvr_heap *heap;
++			struct pvr_gem_object *guard;
++			u64 hwm;
++
++			heap = pvr_find_heap_containing(pvr_dev, heap_bases[i], 1);
++			if (!vm_ctx || !heap)
++				continue;
++			hwm = pvr_vm_find_high_water_mark(vm_ctx, heap->base, heap->size);
++			guard = pvr_gem_object_create(pvr_dev, GUARD_SIZE, 0);
++			if (IS_ERR(guard))
++				continue;
++			(void)pvr_vm_map(vm_ctx, guard, 0, hwm, GUARD_SIZE);
++			pvr_gem_object_put(guard);
++		}
++	}
++
+ 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES, 0);
+ 
+ 	xa_init_flags(&signal_array, XA_FLAGS_ALLOC);
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.c b/drivers/gpu/drm/imagination/pvr_queue.c
+index c79a860ecc237b513f8e48541d78a4c6beca835e..1269b1038082e4471174bff02cd587495ac936fc 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.c
++++ b/drivers/gpu/drm/imagination/pvr_queue.c
+@@ -9,6 +9,7 @@
+ #include "pvr_context.h"
+ #include "pvr_device.h"
+ #include "pvr_drv.h"
++#include "pvr_fw.h"
+ #include "pvr_hwrt.h"
+ #include "pvr_job.h"
+ #include "pvr_queue.h"
+@@ -784,6 +785,8 @@ static struct dma_fence *pvr_queue_run_job(struct drm_sched_job *sched_job)
+ 	/* Submit our job to the CCCB */
+ 	pvr_queue_submit_job_to_cccb(job);
+ 
++	pvr_fw_program_heap_bases(pvr_dev);
++
+ 	if (job->paired_job) {
+ 		struct pvr_job *geom_job = job;
+ 		struct pvr_job *frag_job = job->paired_job;
+diff --git a/drivers/gpu/drm/imagination/pvr_vm.c b/drivers/gpu/drm/imagination/pvr_vm.c
+index cbdd15ed74fdbb4bed1ce32ceaf651a44c13ee2b..c3c3e2704471ab11ccba5b82452c81b53ba19398 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm.c
++++ b/drivers/gpu/drm/imagination/pvr_vm.c
+@@ -908,6 +908,24 @@ pvr_vm_unmap_all(struct pvr_vm_context *vm_ctx)
+ 	mutex_unlock(&vm_ctx->lock);
+ }
+ 
++u64
++pvr_vm_find_high_water_mark(struct pvr_vm_context *vm_ctx, u64 base, u64 range)
++{
++	struct drm_gpuva *va;
++	u64 hwm = base;
++
++	mutex_lock(&vm_ctx->lock);
++	drm_gpuvm_for_each_va_range(va, &vm_ctx->gpuvm_mgr, base, base + range) {
++		u64 end = va->va.addr + va->va.range;
++
++		if (end > hwm)
++			hwm = end;
++	}
++	mutex_unlock(&vm_ctx->lock);
++
++	return hwm;
++}
++
+ /* Static data areas are determined by firmware. */
+ static const struct drm_pvr_static_data_area static_data_areas[] = {
+ 	{
+diff --git a/drivers/gpu/drm/imagination/pvr_vm.h b/drivers/gpu/drm/imagination/pvr_vm.h
+index b0528dffa7f1ba4342c98c2abd7fac31d254d0e7..02c51d388f3476bdb269122c09e900450d5ae8a7 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm.h
++++ b/drivers/gpu/drm/imagination/pvr_vm.h
+@@ -67,4 +67,6 @@ struct pvr_vm_context *pvr_vm_context_get(struct pvr_vm_context *vm_ctx);
+ bool pvr_vm_context_put(struct pvr_vm_context *vm_ctx);
+ void pvr_destroy_vm_contexts_for_file(struct pvr_file *pvr_file);
+ 
++u64 pvr_vm_find_high_water_mark(struct pvr_vm_context *vm_ctx, u64 base, u64 range);
++
+ #endif /* PVR_VM_H */
+diff --git a/drivers/gpu/drm/imagination/pvr_vm_mips.c b/drivers/gpu/drm/imagination/pvr_vm_mips.c
+index 17fb91ccc0e42f103c764bd7ee9dd842ab4aaef5..b648d18360116e75c75a5512da2b956c095cab43 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm_mips.c
++++ b/drivers/gpu/drm/imagination/pvr_vm_mips.c
+@@ -251,6 +251,10 @@ pvr_vm_mips_unmap(struct pvr_device *pvr_dev, struct pvr_fw_object *fw_obj)
+ 
+ 	pvr_vm_mips_pt_sync_for_device(mips_data, from_pvr_device(pvr_dev)->dev,
+ 				       start_pfn, end_pfn);
++
++	if (pvr_dev->lost)
++		return;
++
+ 	pvr_mmu_flush_request_all(pvr_dev);
+ 	WARN_ON(pvr_mmu_flush_exec(pvr_dev, true));
+ }
+-- 
+2.53.0

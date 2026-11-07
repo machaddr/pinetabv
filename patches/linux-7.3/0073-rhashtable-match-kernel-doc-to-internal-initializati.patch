@@ -1,0 +1,49 @@
+From 960a0e6553cc5ebdb3e91eda4987788320f8f638 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 16:54:16 +0100
+Subject: [PATCH 73/77] rhashtable: match kernel-doc to internal initialization
+ helpers
+
+The documented names predate the allocation-profiling wrappers, while
+kernel-doc parses the exported _noprof implementations as
+__rhashtable_init() and __rhltable_init(). Use those parsed names and
+document the lockdep class key argument.
+
+No functional change.
+
+Assisted-by: Codex:gpt-5
+---
+ lib/rhashtable.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/lib/rhashtable.c b/lib/rhashtable.c
+index 208cb3558f8c2..7c23bc26be513 100644
+--- a/lib/rhashtable.c
++++ b/lib/rhashtable.c
+@@ -1017,9 +1017,10 @@ static u32 rhashtable_jhash2(const void *key, u32 length, u32 seed)
+ }
+ 
+ /**
+- * rhashtable_init - initialize a new hash table
++ * __rhashtable_init - initialize a new hash table
+  * @ht:		hash table to be initialized
+  * @params:	configuration parameters
++ * @key:	lockdep class key for the table mutex
+  *
+  * Initializes a new hash table based on the provided configuration
+  * parameters. A table can be configured either with a variable or
+@@ -1125,9 +1126,10 @@ int __rhashtable_init_noprof(struct rhashtable *ht,
+ EXPORT_SYMBOL_GPL(__rhashtable_init_noprof);
+ 
+ /**
+- * rhltable_init - initialize a new hash list table
++ * __rhltable_init - initialize a new hash list table
+  * @hlt:	hash list table to be initialized
+  * @params:	configuration parameters
++ * @key:	lockdep class key for the table mutex
+  *
+  * Initializes a new hash list table.
+  *
+-- 
+2.55.0
+

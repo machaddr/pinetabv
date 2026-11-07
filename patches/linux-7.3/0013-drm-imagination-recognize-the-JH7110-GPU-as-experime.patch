@@ -1,0 +1,31 @@
+From f0f3a0e342414ea48e265193263055c77c13794f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:31:52 +0100
+Subject: [PATCH 13/53] drm/imagination: recognize the JH7110 GPU as
+ experimental
+
+Recognize exact BVNC 36.50.54.182 behind the existing exp_hw_support
+gate. The core remains unsupported by default and requires an explicit
+experimental opt-in.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_device.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_device.c b/drivers/gpu/drm/imagination/pvr_device.c
+index d4d40704e67183f1939d701408c7731181f97e05..0ef3583fed38bb4a5fa69a0b2f6d7a7bcc701cb8 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.c
++++ b/drivers/gpu/drm/imagination/pvr_device.c
+@@ -556,6 +556,9 @@ pvr_gpu_support_level(const struct pvr_gpu_id *gpu_id)
+ 	case PVR_PACKED_BVNC(36, 53, 104, 796):
+ 		return PVR_GPU_SUPPORTED;
+ 
++	case PVR_PACKED_BVNC(36, 50, 54, 182):
++		return PVR_GPU_EXPERIMENTAL;
++
+ 	default:
+ 		return PVR_GPU_UNKNOWN;
+ 	}
+-- 
+2.53.0

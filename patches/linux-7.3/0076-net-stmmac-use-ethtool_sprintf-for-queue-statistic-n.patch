@@ -1,0 +1,44 @@
+From 7d3e99929d6a97189ddc0d1c2306cfbe25bab4b0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 16:54:16 +0100
+Subject: [PATCH 76/77] net: stmmac: use ethtool_sprintf() for queue statistic
+ names
+
+Use the ethtool string-table helper for formatted queue names. It
+applies the fixed ETH_GSTRING_LEN bound and advances the output pointer,
+matching the open-coded sequence while avoiding format-truncation
+diagnostics based on the backing array declarations.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
+index 92585d27ab883..bffbbbd6fc8b0 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_ethtool.c
+@@ -660,16 +660,14 @@ static void stmmac_get_qstats_string(struct stmmac_priv *priv, u8 *data)
+ 
+ 	for (q = 0; q < tx_cnt; q++) {
+ 		for (stat = 0; stat < STMMAC_TXQ_STATS; stat++) {
+-			snprintf(data, ETH_GSTRING_LEN, "q%d_%s", q,
+-				 stmmac_qstats_tx_string[stat]);
+-			data += ETH_GSTRING_LEN;
++			ethtool_sprintf(&data, "q%d_%s", q,
++					stmmac_qstats_tx_string[stat]);
+ 		}
+ 	}
+ 	for (q = 0; q < rx_cnt; q++) {
+ 		for (stat = 0; stat < STMMAC_RXQ_STATS; stat++) {
+-			snprintf(data, ETH_GSTRING_LEN, "q%d_%s", q,
+-				 stmmac_qstats_rx_string[stat]);
+-			data += ETH_GSTRING_LEN;
++			ethtool_sprintf(&data, "q%d_%s", q,
++					stmmac_qstats_rx_string[stat]);
+ 		}
+ 	}
+ }
+-- 
+2.55.0
+

@@ -1,0 +1,395 @@
+From a1859e9816c458d0751f72dc876bfb2328556701 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 12:02:00 +0100
+Subject: [PATCH 3/4] drm/bridge: cdns-dsi: prepare the JH7110 PHY before its
+ link
+
+The JH7110 wrapper currently initializes the generic Cadence link before
+powering and configuring its external M31 D-PHY. The first panel command
+therefore starts an unclocked link. The vendor display path initializes
+the PHY and releases TXBYTEHS first, then starts the link and waits 20 us.
+
+Call the platform transfer preparation before common link setup while
+leaving the order unchanged for platforms without that callback. Report
+PHY operation errors so a failed JH7110 PLL start is not silently ignored.
+Track successful bridge activation so failures from the void pre-enable
+hook unwind once and a later post-disable cannot tear resources down twice.
+
+Add post-start and link-control callbacks to omit the unused Cadence PLL
+start, set the JH7110 burst wait and LPM clock force-stop controls, and
+apply the settling delay without changing other Cadence users.
+
+Assisted-by: Codex:gpt-5
+---
+ .../gpu/drm/bridge/cadence/cdns-dsi-core.c    | 151 +++++++++++++-----
+ .../gpu/drm/bridge/cadence/cdns-dsi-core.h    |   7 +-
+ .../gpu/drm/bridge/cadence/cdns-dsi-jh7110.c  |  28 +++-
+ 3 files changed, 145 insertions(+), 41 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+index 410001e..2577d6b 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+@@ -599,6 +599,24 @@ cdns_dsi_bridge_mode_valid(struct drm_bridge *bridge,
+ 	return MODE_OK;
+ }
+ 
++static void cdns_dsi_hs_fini(struct cdns_dsi *dsi)
++{
++	int ret;
++
++	if (!dsi->phy_initialized)
++		return;
++
++	ret = phy_power_off(dsi->dphy);
++	if (ret)
++		dev_err(dsi->base.dev, "failed to power off DSI PHY: %d\n", ret);
++
++	ret = phy_exit(dsi->dphy);
++	if (ret)
++		dev_err(dsi->base.dev, "failed to exit DSI PHY: %d\n", ret);
++
++	dsi->phy_initialized = false;
++}
++
+ static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
+ 						struct drm_atomic_commit *state)
+ {
+@@ -606,6 +624,11 @@ static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
+ 	struct cdns_dsi *dsi = input_to_dsi(input);
+ 	u32 val;
+ 
++	if (!input->enabled)
++		return;
++
++	input->enabled = false;
++
+ 	/*
+ 	 * The cdns-dsi controller needs to be disabled after it's DPI source
+ 	 * has stopped streaming. If this is not followed, there is a brief
+@@ -632,21 +655,20 @@ static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
+ 	if (dsi->platform_ops && dsi->platform_ops->disable)
+ 		dsi->platform_ops->disable(dsi);
+ 
+-	dsi->phy_initialized = false;
+ 	dsi->link_initialized = false;
+-	phy_power_off(dsi->dphy);
+-	phy_exit(dsi->dphy);
++	cdns_dsi_hs_fini(dsi);
+ 
+ 	pm_runtime_put(dsi->base.dev);
+ }
+ 
+-void cdns_dsi_hs_init(struct cdns_dsi *dsi)
++int cdns_dsi_hs_init(struct cdns_dsi *dsi)
+ {
+ 	struct cdns_dsi_output *output = &dsi->output;
+ 	u32 status;
++	int ret;
+ 
+ 	if (dsi->phy_initialized)
+-		return;
++		return 0;
+ 	/*
+ 	 * Power all internal DPHY blocks down and maintain their reset line
+ 	 * asserted before changing the DPHY config.
+@@ -655,10 +677,21 @@ void cdns_dsi_hs_init(struct cdns_dsi *dsi)
+ 	       DPHY_CMN_PDN | DPHY_PLL_PDN,
+ 	       dsi->regs + MCTL_DPHY_CFG0);
+ 
+-	phy_init(dsi->dphy);
+-	phy_set_mode(dsi->dphy, PHY_MODE_MIPI_DPHY);
+-	phy_configure(dsi->dphy, &output->phy_opts);
+-	phy_power_on(dsi->dphy);
++	ret = phy_init(dsi->dphy);
++	if (ret)
++		return ret;
++
++	ret = phy_set_mode(dsi->dphy, PHY_MODE_MIPI_DPHY);
++	if (ret)
++		goto exit_phy;
++
++	ret = phy_configure(dsi->dphy, &output->phy_opts);
++	if (ret)
++		goto exit_phy;
++
++	ret = phy_power_on(dsi->dphy);
++	if (ret)
++		goto exit_phy;
+ 
+ 	/* Activate the PLL and wait until it's locked. */
+ 	writel(PLL_LOCKED, dsi->regs + MCTL_MAIN_STS_CLR);
+@@ -671,26 +704,38 @@ void cdns_dsi_hs_init(struct cdns_dsi *dsi)
+ 	       DPHY_D_RSTB(output->dev->lanes) | DPHY_C_RSTB,
+ 	       dsi->regs + MCTL_DPHY_CFG0);
+ 	dsi->phy_initialized = true;
++
++	return 0;
++
++exit_phy:
++	phy_exit(dsi->dphy);
++	return ret;
+ }
+ 
+ static void cdns_dsi_init_link(struct cdns_dsi *dsi)
+ {
+ 	struct cdns_dsi_output *output = &dsi->output;
+ 	unsigned long sysclk_period, ulpout;
+-	u32 val;
++	u32 main_en = CLK_LANE_EN | PLL_START;
++	u32 phy_ctl = 0;
+ 	int i;
+ 
+ 	if (dsi->link_initialized)
+ 		return;
+ 
+-	val = 0;
+ 	for (i = 1; i < output->dev->lanes; i++)
+-		val |= DATA_LANE_EN(i);
++		phy_ctl |= DATA_LANE_EN(i);
+ 
+ 	if (!(output->dev->mode_flags & MIPI_DSI_CLOCK_NON_CONTINUOUS))
+-		val |= CLK_CONTINUOUS;
++		phy_ctl |= CLK_CONTINUOUS;
+ 
+-	writel(val, dsi->regs + MCTL_MAIN_PHY_CTL);
++	for (i = 0; i < output->dev->lanes; i++)
++		main_en |= DATA_LANE_START(i);
++
++	if (dsi->platform_ops && dsi->platform_ops->link_config)
++		dsi->platform_ops->link_config(dsi, &phy_ctl, &main_en);
++
++	writel(phy_ctl, dsi->regs + MCTL_MAIN_PHY_CTL);
+ 
+ 	/* ULPOUT should be set to 1ms and is expressed in sysclk cycles. */
+ 	sysclk_period = NSEC_PER_SEC / clk_get_rate(dsi->dsi_sys_clk);
+@@ -700,15 +745,32 @@ static void cdns_dsi_init_link(struct cdns_dsi *dsi)
+ 
+ 	writel(LINK_EN, dsi->regs + MCTL_MAIN_DATA_CTL);
+ 
+-	val = CLK_LANE_EN | PLL_START;
+-	for (i = 0; i < output->dev->lanes; i++)
+-		val |= DATA_LANE_START(i);
+-
+-	writel(val, dsi->regs + MCTL_MAIN_EN);
++	writel(main_en, dsi->regs + MCTL_MAIN_EN);
+ 
+ 	dsi->link_initialized = true;
+ }
+ 
++static int cdns_dsi_prepare_link(struct cdns_dsi *dsi)
++{
++	bool start_link = !dsi->link_initialized;
++	int ret;
++
++	/* Some wrappers must power their external PHY before link setup. */
++	if (dsi->platform_ops && dsi->platform_ops->transfer) {
++		ret = dsi->platform_ops->transfer(dsi);
++		if (ret)
++			return ret;
++	}
++
++	cdns_dsi_init_link(dsi);
++
++	if (start_link && dsi->platform_ops &&
++	    dsi->platform_ops->link_started)
++		dsi->platform_ops->link_started(dsi);
++
++	return 0;
++}
++
+ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 					      struct drm_atomic_commit *state)
+ {
+@@ -742,12 +804,15 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 	 * enable their streams.
+ 	 */
+ 
+-	if (WARN_ON(pm_runtime_get_sync(dsi->base.dev) < 0))
++	if (WARN_ON(input->enabled))
++		return;
++
++	if (WARN_ON(pm_runtime_resume_and_get(dsi->base.dev) < 0))
+ 		return;
+ 
+ 	new_bridge_state = drm_atomic_get_new_bridge_state(state, bridge);
+ 	if (WARN_ON(!new_bridge_state))
+-		return;
++		goto err_pm_runtime;
+ 
+ 	dsi_state = to_cdns_dsi_bridge_state(new_bridge_state);
+ 	dsi_cfg = dsi_state->dsi_cfg;
+@@ -761,17 +826,16 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 	mode = &crtc_state->adjusted_mode;
+ 	nlanes = output->dev->lanes;
+ 
+-	cdns_dsi_init_link(dsi);
+-	cdns_dsi_hs_init(dsi);
+-	if (dsi->platform_ops && dsi->platform_ops->transfer) {
+-		ret = dsi->platform_ops->transfer(dsi);
+-		if (ret) {
+-			dev_err(dsi->base.dev,
+-				"failed to enable platform high-speed path: %d\n",
+-				ret);
+-			pm_runtime_put(dsi->base.dev);
+-			return;
+-		}
++	ret = cdns_dsi_prepare_link(dsi);
++	if (ret) {
++		dev_err(dsi->base.dev, "failed to prepare DSI link: %d\n", ret);
++		goto err_disable_platform;
++	}
++
++	ret = cdns_dsi_hs_init(dsi);
++	if (ret) {
++		dev_err(dsi->base.dev, "failed to initialize DSI PHY: %d\n", ret);
++		goto err_disable_platform;
+ 	}
+ 
+ 	/*
+@@ -878,7 +942,7 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 
+ 		default:
+ 			dev_err(dsi->base.dev, "Unsupported DSI format\n");
+-			return;
++			goto err_disable_platform;
+ 		}
+ 
+ 		if (output->dev->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
+@@ -905,6 +969,18 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 
+ 	tmp = readl(dsi->regs + MCTL_MAIN_EN) | IF_EN(input->id);
+ 	writel(tmp, dsi->regs + MCTL_MAIN_EN);
++
++	input->enabled = true;
++	return;
++
++err_disable_platform:
++	if (dsi->platform_ops && dsi->platform_ops->disable)
++		dsi->platform_ops->disable(dsi);
++
++	dsi->link_initialized = false;
++	cdns_dsi_hs_fini(dsi);
++err_pm_runtime:
++	pm_runtime_put(dsi->base.dev);
+ }
+ 
+ static u32 *cdns_dsi_bridge_get_input_bus_fmts(struct drm_bridge *bridge,
+@@ -1139,12 +1215,9 @@ static ssize_t cdns_dsi_transfer(struct mipi_dsi_host *host,
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	cdns_dsi_init_link(dsi);
+-	if (dsi->platform_ops && dsi->platform_ops->transfer) {
+-		ret = dsi->platform_ops->transfer(dsi);
+-		if (ret)
+-			goto out;
+-	}
++	ret = cdns_dsi_prepare_link(dsi);
++	if (ret)
++		goto out;
+ 
+ 	ret = mipi_dsi_create_packet(&packet, msg);
+ 	if (ret)
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+index 68bde2d..8a2856c 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+@@ -44,6 +44,7 @@ struct cdns_dsi_cfg {
+ struct cdns_dsi_input {
+ 	enum cdns_dsi_input_id id;
+ 	struct drm_bridge bridge;
++	bool enabled;
+ };
+ 
+ struct cdns_dsi;
+@@ -58,6 +59,8 @@ struct cdns_dsi;
+  * @suspend: Called before the common resources are disabled
+  * @mode_fixup: Adjust PHY and DSI timings for platform clock constraints
+  * @transfer: Prepare the platform before a DSI command transfer
++ * @link_config: Adjust link control registers before starting the link
++ * @link_started: Called after starting a previously disabled DSI link
+  */
+ struct cdns_dsi_platform_ops {
+ 	int (*init)(struct cdns_dsi *dsi);
+@@ -70,6 +73,8 @@ struct cdns_dsi_platform_ops {
+ 			  struct cdns_dsi_cfg *dsi_cfg,
+ 			  struct phy_configure_opts_mipi_dphy *phy_cfg);
+ 	int (*transfer)(struct cdns_dsi *dsi);
++	void (*link_config)(struct cdns_dsi *dsi, u32 *phy_ctl, u32 *main_en);
++	void (*link_started)(struct cdns_dsi *dsi);
+ };
+ 
+ struct cdns_dsi {
+@@ -99,6 +104,6 @@ struct cdns_dsi {
+ #endif
+ };
+ 
+-void cdns_dsi_hs_init(struct cdns_dsi *dsi);
++int cdns_dsi_hs_init(struct cdns_dsi *dsi);
+ 
+ #endif /* !__CDNS_DSI_H__ */
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index 86a9450..404922d 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/math64.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/regmap.h>
+@@ -15,6 +16,9 @@
+ #include "cdns-dsi-jh7110.h"
+ 
+ #define JH7110_DPHY_RATE_STEP	10000000UL
++#define JH7110_DSI_WAIT_BURST_TIME	GENMASK(13, 10)
++#define JH7110_DSI_CLK_FORCE_STOP	BIT(16)
++#define JH7110_DSI_PLL_START		BIT(0)
+ #define JH7110_VOUT_SYSCON_LCD_MAP	0x8
+ #define JH7110_VOUT_SYSCON_LCD_TO_DSI	BIT(3)
+ 
+@@ -160,15 +164,37 @@ static int cdns_dsi_jh7110_mode_fixup(struct cdns_dsi *dsi,
+ 
+ static int cdns_dsi_jh7110_transfer(struct cdns_dsi *dsi)
+ {
+-	cdns_dsi_hs_init(dsi);
++	int ret;
++
++	ret = cdns_dsi_hs_init(dsi);
++	if (ret)
++		return ret;
+ 
+ 	return reset_control_deassert(dsi->resets[dsi->num_rsts - 1].rstc);
+ }
+ 
++static void cdns_dsi_jh7110_link_config(struct cdns_dsi *dsi, u32 *phy_ctl,
++					u32 *main_en)
++{
++	*phy_ctl |= JH7110_DSI_WAIT_BURST_TIME;
++	/* The external M31 D-PHY owns its PLL; Cadence PLL_START is unused. */
++	*main_en &= ~JH7110_DSI_PLL_START;
++
++	if (dsi->output.dev->mode_flags & MIPI_DSI_MODE_LPM)
++		*main_en |= JH7110_DSI_CLK_FORCE_STOP;
++}
++
++static void cdns_dsi_jh7110_link_started(struct cdns_dsi *dsi)
++{
++	usleep_range(20, 40);
++}
++
+ const struct cdns_dsi_platform_ops dsi_jh7110_ops = {
+ 	.init = cdns_dsi_jh7110_init,
+ 	.resume = cdns_dsi_jh7110_resume,
+ 	.suspend = cdns_dsi_jh7110_suspend,
+ 	.mode_fixup = cdns_dsi_jh7110_mode_fixup,
+ 	.transfer = cdns_dsi_jh7110_transfer,
++	.link_config = cdns_dsi_jh7110_link_config,
++	.link_started = cdns_dsi_jh7110_link_started,
+ };
+-- 
+2.55.0
+

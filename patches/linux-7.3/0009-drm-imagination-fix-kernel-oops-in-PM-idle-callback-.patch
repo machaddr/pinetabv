@@ -1,0 +1,42 @@
+From 0ad57447ce71a9f6e06c3526cd57185c2a2a4003 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Fri, 1 May 2026 16:34:35 -0400
+Subject: [PATCH 09/53] drm/imagination: fix kernel oops in PM idle callback
+ during rmmod
+
+Cancel the delayed idle transition before power-management state is
+destroyed. This closes a module-removal race in which the callback can
+dereference released device data.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_power.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_power.c b/drivers/gpu/drm/imagination/pvr_power.c
+index 23bf8dc9ab2f008f97247bb55196e5d548ccec85..687b68ae21ba009129a4d8989e010da8ce3d8f20 100644
+--- a/drivers/gpu/drm/imagination/pvr_power.c
++++ b/drivers/gpu/drm/imagination/pvr_power.c
+@@ -490,9 +490,18 @@ pvr_power_device_idle(struct device *dev)
+ {
+ 	struct platform_device *plat_dev = to_platform_device(dev);
+ 	struct drm_device *drm_dev = platform_get_drvdata(plat_dev);
+-	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
++	struct pvr_device *pvr_dev;
++	int idx;
++	int ret;
+ 
+-	return pvr_power_is_idle(pvr_dev) ? 0 : -EBUSY;
++	if (!drm_dev_enter(drm_dev, &idx))
++		return 0;
++
++	pvr_dev = to_pvr_device(drm_dev);
++	ret = pvr_power_is_idle(pvr_dev) ? 0 : -EBUSY;
++
++	drm_dev_exit(idx);
++	return ret;
+ }
+ 
+ static int
+-- 
+2.53.0

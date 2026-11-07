@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 18:11:00 +0100
+Subject: [PATCH 2/3] drm/bridge: cdns-dsi: restore PineTab-V packet timings
+
+The PineTab-V mode has short DPI sync and back-porch intervals.  The
+generic DPI-to-DSI conversion consequently produces HSA/HBP/HFP packet
+lengths of 1/3/152 at the JH7110's rounded 400 MHz lane rate.  The
+known-working StarFive kernel and PineTab-V U-Boot both use 52/52/52.
+
+Apply the vendor's pre-alignment values of 52/52/51 and a total of 2587
+bytes only to the PineTab-V panel compatible.  The existing four-lane
+rate adjustment then extends HFP by one byte, producing the validated
+52/52/52 layout without affecting other JH7110 panels.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../gpu/drm/bridge/cadence/cdns-dsi-jh7110.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index 404922ddfe7d..1d91c3958f41 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -9,6 +9,7 @@
+ #include <linux/delay.h>
+ #include <linux/math64.h>
+ #include <linux/mfd/syscon.h>
++#include <linux/of.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ #include <video/videomode.h>
+@@ -22,6 +23,12 @@
+ #define JH7110_VOUT_SYSCON_LCD_MAP	0x8
+ #define JH7110_VOUT_SYSCON_LCD_TO_DSI	BIT(3)
+ 
++/* Known-good packet timings for the PineTab-V 800x1280 panel. */
++#define JH7110_PINETAB_V_DSI_HSA		52
++#define JH7110_PINETAB_V_DSI_HBP		52
++#define JH7110_PINETAB_V_DSI_HFP		51
++#define JH7110_PINETAB_V_DSI_HTOTAL	2587
++
+ static const char * const dsi_resets[] = {
+ 	"dpi",
+ 	"rxesc",
+@@ -148,6 +155,20 @@ static int cdns_dsi_jh7110_mode_fixup(struct cdns_dsi *dsi,
+ 	lane_rate = roundup(phy_cfg->hs_clk_rate, JH7110_DPHY_RATE_STEP);
+ 	phy_cfg->hs_clk_rate = lane_rate;
+ 
++	/*
++	 * The JH7110 integration cannot derive usable packet blanking for the
++	 * PineTab-V mode from its short DPI sync and back-porch intervals.  Use
++	 * the packet layout validated by the vendor kernel and U-Boot.  HFP is
++	 * extended below when the rounded 400 MHz lane rate requires it.
++	 */
++	if (of_device_is_compatible(dsi->output.dev->dev.of_node,
++				    "boe,th101mb31ig002-28a-pinetab-v")) {
++		dsi_cfg->hsa = JH7110_PINETAB_V_DSI_HSA;
++		dsi_cfg->hbp = JH7110_PINETAB_V_DSI_HBP;
++		dsi_cfg->hfp = JH7110_PINETAB_V_DSI_HFP;
++		dsi_cfg->htotal = JH7110_PINETAB_V_DSI_HTOTAL;
++	}
++
+ 	dpi_htotal = vm->hactive + vm->hfront_porch + vm->hsync_len +
+ 		     vm->hback_porch;
+ 	adjusted_htotal = DIV_ROUND_UP_ULL((u64)lane_rate * lanes * dpi_htotal,
+-- 
+2.55.0

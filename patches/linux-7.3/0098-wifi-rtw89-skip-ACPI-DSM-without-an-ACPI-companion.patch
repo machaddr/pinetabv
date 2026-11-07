@@ -1,0 +1,45 @@
+From b59705b26b0c759eceba14e65223c2f61961932f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 14:37:00 +0100
+Subject: [PATCH] wifi: rtw89: skip ACPI DSM without an ACPI companion
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+rtw89 asks for optional regulatory and SAR policy through an ACPI _DSM even
+when its device was enumerated without an ACPI companion.  Passing a NULL
+handle to the ACPI evaluator emits misleading errors on Device Tree
+systems.  The driver then correctly falls back to its default policy.
+
+Check for an ACPI handle before evaluating the method.  Return the result
+used when the optional method is unavailable.  This retains the fallback
+behavior without invoking an inapplicable firmware API.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/net/wireless/realtek/rtw89/acpi.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/acpi.c b/drivers/net/wireless/realtek/rtw89/acpi.c
+--- a/drivers/net/wireless/realtek/rtw89/acpi.c
++++ b/drivers/net/wireless/realtek/rtw89/acpi.c
+@@ -372,11 +372,14 @@ int rtw89_acpi_evaluate_dsm(struct rtw89_dev *rtwdev,
+ 			    enum rtw89_acpi_dsm_func func,
+ 			    struct rtw89_acpi_dsm_result *res)
+ {
++	acpi_handle handle = ACPI_HANDLE(rtwdev->dev);
+ 	union acpi_object *obj;
+ 	int ret;
+ 
+-	obj = acpi_evaluate_dsm(ACPI_HANDLE(rtwdev->dev), &rtw89_guid,
+-				0, func, NULL);
++	if (!handle)
++		return -ENOENT;
++
++	obj = acpi_evaluate_dsm(handle, &rtw89_guid, 0, func, NULL);
+ 	if (!obj) {
+ 		rtw89_debug(rtwdev, RTW89_DBG_ACPI,
+ 			    "acpi dsm fail to evaluate func: %d\n", func);
+-- 
+2.55.0

@@ -1,0 +1,120 @@
+From 2573b11f76bb44ac5fd0a0476739f1f5d2d21dad Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 16:40:25 +0100
+Subject: [PATCH 21/53] dt-bindings: display: add JH7110 Cadence DSI wrapper
+
+Describe the extra DPI and escape clocks, five resets, and VOUT power
+domain used by the JH7110 Cadence DSI wrapper. Adapt the reviewed StarFive
+v4 binding to Linux 7.3.
+
+Link: https://lore.kernel.org/r/20240513074607.28271-2-shengyang.chen@starfivetech.com
+Assisted-by: Codex:gpt-5
+---
+ .../bindings/display/bridge/cdns,dsi.yaml     | 60 ++++++++++++++++++-
+ 1 file changed, 58 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml b/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml
+index 23060324d16e6..dfba18b764ef9 100644
+--- a/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml
++++ b/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml
+@@ -16,6 +16,7 @@ properties:
+   compatible:
+     enum:
+       - cdns,dsi
++      - starfive,jh7110-dsi
+       - ti,j721e-dsi
+ 
+   reg:
+@@ -27,14 +28,20 @@ properties:
+           Register block for wrapper settings registers in case of TI J7 SoCs.
+ 
+   clocks:
++    minItems: 2
+     items:
+       - description: PSM clock, used by the IP
+       - description: sys clock, used by the IP
++      - description: DPI input clock, used by the JH7110 wrapper
++      - description: DSI escape clock, used by the JH7110 wrapper
+ 
+   clock-names:
++    minItems: 2
+     items:
+       - const: dsi_p_clk
+       - const: dsi_sys_clk
++      - const: dpi
++      - const: txesc
+ 
+   phys:
+     maxItems: 1
+@@ -46,10 +53,25 @@ properties:
+     maxItems: 1
+ 
+   resets:
+-    maxItems: 1
++    minItems: 1
++    items:
++      - description: APB reset associated with dsi_p_clk
++      - description: JH7110 DSI system reset
++      - description: JH7110 DPI reset
++      - description: JH7110 escape-clock reset
++      - description: JH7110 TX byte high-speed reset
+ 
+   reset-names:
+-    const: dsi_p_rst
++    minItems: 1
++    items:
++      - const: dsi_p_rst
++      - const: sys
++      - const: dpi
++      - const: txesc
++      - const: txbytehs
++
++  power-domains:
++    maxItems: 1
+ 
+   ports:
+     $ref: /schemas/graph.yaml#/properties/ports
+@@ -90,6 +112,40 @@ allOf:
+         reg:
+           maxItems: 1
+ 
++  - if:
++      properties:
++        compatible:
++          contains:
++            const: starfive,jh7110-dsi
++    then:
++      properties:
++        clocks:
++          minItems: 4
++          maxItems: 4
++        clock-names:
++          minItems: 4
++          maxItems: 4
++        resets:
++          minItems: 5
++          maxItems: 5
++        reset-names:
++          minItems: 5
++          maxItems: 5
++      required:
++        - power-domains
++        - resets
++        - reset-names
++    else:
++      properties:
++        clocks:
++          maxItems: 2
++        clock-names:
++          maxItems: 2
++        resets:
++          maxItems: 1
++        reset-names:
++          maxItems: 1
++
+ required:
+   - compatible
+   - reg
+-- 
+2.55.0
+

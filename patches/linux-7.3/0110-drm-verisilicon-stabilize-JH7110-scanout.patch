@@ -1,0 +1,284 @@
+From 4e0914b06e0d6d867e9bdc4a21633f573a3b5f48 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Thu, 27 Aug 2026 22:05:00 +0100
+Subject: [PATCH] drm: verisilicon: stabilize JH7110 scanout
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PineTab-V shows load-dependent horizontal streaks and repeated pixels
+when the compositor redraws the primary plane.  The artifacts follow the
+colour of the damaged surface, which points to stale or starved scanout
+data rather than a panel initialization error.
+
+There are two JH7110-specific omissions in the upstream-style DC8200
+driver.  First, it never programs the FIFO watermark or AXI QoS values
+used by the StarFive firmware for the 800-pixel MIPI path.  It therefore
+depends on reset values or on whichever state the bootloader left behind.
+
+Second, every plane callback sets the shadow-register commit bit.  The bit
+remains set after the first update, so later transactions write registers
+while shadowing is enabled and do not produce the clear-to-set transaction
+used by the vendor driver.  Touch and pointer movement make this especially
+visible because they cause rapid primary-plane updates.
+
+Use match data to apply StarFive's documented firmware values only to the
+JH7110 integration: QoS 0xe8 and primary watermark 0x000fb00b.  Clear the
+shadow commit bit in CRTC atomic_begin(), update the complete plane state,
+then set it once in atomic_flush().  Also report the hardware underflow bit
+at a rate-limited cadence so a physical UART log can distinguish memory
+starvation from a DSI transport failure.
+
+The values are taken from the StarFive PineTab-V U-Boot DC8200 MIPI
+setup in drivers/video/starfive/sf_vop.c.
+
+Link: https://github.com/starfive-tech/u-boot/blob/pinetabv-devel/drivers/video/starfive/sf_vop.c
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/verisilicon/vs_crtc.c              | 25 ++++++++++++++++-
+ drivers/gpu/drm/verisilicon/vs_dc.c                | 32 +++++++++++++++++++++-
+ drivers/gpu/drm/verisilicon/vs_dc.h                |  2 ++
+ drivers/gpu/drm/verisilicon/vs_dc_top_regs.h       |  2 ++
+ drivers/gpu/drm/verisilicon/vs_primary_plane.c     | 15 ++--------
+ .../gpu/drm/verisilicon/vs_primary_plane_regs.h    |  3 ++
+ 6 files changed, 65 insertions(+), 14 deletions(-)
+
+diff --git i/drivers/gpu/drm/verisilicon/vs_crtc.c w/drivers/gpu/drm/verisilicon/vs_crtc.c
+index 0b8a35d09..d44737d04 100644
+--- i/drivers/gpu/drm/verisilicon/vs_crtc.c
++++ w/drivers/gpu/drm/verisilicon/vs_crtc.c
+@@ -19,6 +19,28 @@
+ #include "vs_dc_top_regs.h"
+ #include "vs_drm.h"
+ #include "vs_plane.h"
++#include "vs_primary_plane_regs.h"
++
++static void vs_crtc_atomic_begin(struct drm_crtc *crtc,
++				 struct drm_atomic_commit *state)
++{
++	struct vs_crtc *vcrtc = drm_crtc_to_vs_crtc(crtc);
++	struct vs_dc *dc = vcrtc->dc;
++
++	regmap_clear_bits(dc->regs, VSDC_FB_CONFIG_EX(vcrtc->id),
++			  VSDC_FB_CONFIG_EX_COMMIT);
++}
++
++static void vs_crtc_atomic_flush(struct drm_crtc *crtc,
++				 struct drm_atomic_commit *state)
++{
++	struct vs_crtc *vcrtc = drm_crtc_to_vs_crtc(crtc);
++	struct vs_dc *dc = vcrtc->dc;
++
++	regmap_set_bits(dc->regs, VSDC_FB_CONFIG_EX(vcrtc->id),
++			VSDC_FB_CONFIG_EX_COMMIT);
++	drm_crtc_vblank_atomic_flush(crtc, state);
++}
+ 
+ static void vs_crtc_atomic_disable(struct drm_crtc *crtc,
+ 				   struct drm_atomic_commit *state)
+@@ -119,7 +141,8 @@ static bool vs_crtc_mode_fixup(struct drm_crtc *crtc,
+ }
+ 
+ static const struct drm_crtc_helper_funcs vs_crtc_helper_funcs = {
+-	.atomic_flush	= drm_crtc_vblank_atomic_flush,
++	.atomic_begin	= vs_crtc_atomic_begin,
++	.atomic_flush	= vs_crtc_atomic_flush,
+ 	.atomic_enable	= vs_crtc_atomic_enable,
+ 	.atomic_disable	= vs_crtc_atomic_disable,
+ 	.mode_set_nofb	= vs_crtc_mode_set_nofb,
+diff --git i/drivers/gpu/drm/verisilicon/vs_dc.c w/drivers/gpu/drm/verisilicon/vs_dc.c
+index 280f716df..a692bbf04 100644
+--- i/drivers/gpu/drm/verisilicon/vs_dc.c
++++ w/drivers/gpu/drm/verisilicon/vs_dc.c
+@@ -6,6 +6,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/irqreturn.h>
+ #include <linux/of.h>
++#include <linux/of_device.h>
+ #include <linux/of_graph.h>
+ 
+ #include "vs_crtc.h"
+@@ -13,6 +14,17 @@
+ #include "vs_dc_top_regs.h"
+ #include "vs_drm.h"
+ #include "vs_hwdb.h"
++#include "vs_primary_plane_regs.h"
++
++struct vs_dc_platform_data {
++	u32 qos_config;
++	u32 primary_watermark;
++};
++
++static const struct vs_dc_platform_data jh7110_dc_data = {
++	.qos_config = 0xe8,
++	.primary_watermark = 0x000fb00b,
++};
+ 
+ static const struct regmap_config vs_dc_regmap_cfg = {
+ 	.reg_bits = 32,
+@@ -23,6 +35,10 @@ static const struct regmap_config vs_dc_regmap_cfg = {
+ };
+ 
+ static const struct of_device_id vs_dc_driver_dt_match[] = {
++	{
++		.compatible = "starfive,jh7110-dc8200",
++		.data = &jh7110_dc_data,
++	},
+ 	{ .compatible = "verisilicon,dc" },
+ 	{},
+ };
+@@ -31,9 +47,16 @@ MODULE_DEVICE_TABLE(of, vs_dc_driver_dt_match);
+ static irqreturn_t vs_dc_irq_handler(int irq, void *private)
+ {
+ 	struct vs_dc *dc = private;
+-	u32 irqs;
++	unsigned int i;
++	u32 irqs, status;
+ 
+ 	regmap_read(dc->regs, VSDC_TOP_IRQ_ACK, &irqs);
++	for (i = 0; i < dc->identity.display_count; i++) {
++		regmap_read(dc->regs, VSDC_FB_CONFIG(i), &status);
++		if (status & VSDC_FB_CONFIG_UNDERFLOW)
++			dev_warn_ratelimited(dc->dev,
++					     "primary plane %u FIFO underflow\n", i);
++	}
+ 
+ 	vs_drm_handle_irq(dc, irqs);
+ 
+@@ -43,6 +66,7 @@ static irqreturn_t vs_dc_irq_handler(int irq, void *private)
+ static int vs_dc_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
++	const struct vs_dc_platform_data *data;
+ 	struct vs_dc *dc;
+ 	void __iomem *regs;
+ 	unsigned int port_count, i;
+@@ -74,6 +98,10 @@ static int vs_dc_probe(struct platform_device *pdev)
+ 	dc = devm_kzalloc(dev, sizeof(*dc), GFP_KERNEL);
+ 	if (!dc)
+ 		return -ENOMEM;
++	dc->dev = dev;
++	data = of_device_get_match_data(dev);
++	if (data)
++		dc->primary_watermark = data->primary_watermark;
+ 
+ 	dc->rsts[0].id = "core";
+ 	dc->rsts[1].id = "axi";
+@@ -142,6 +170,8 @@ static int vs_dc_probe(struct platform_device *pdev)
+ 
+ 	dev_info(dev, "Found DC%x rev %x customer %x\n", dc->identity.model,
+ 		 dc->identity.revision, dc->identity.customer_id);
++	if (data)
++		regmap_write(dc->regs, VSDC_TOP_QOS_CONFIG, data->qos_config);
+ 
+ 	if (port_count > dc->identity.display_count) {
+ 		dev_err(dev, "too many downstream ports than HW capability\n");
+diff --git i/drivers/gpu/drm/verisilicon/vs_dc.h w/drivers/gpu/drm/verisilicon/vs_dc.h
+index 4e812ef93..b5d4e7b40 100644
+--- i/drivers/gpu/drm/verisilicon/vs_dc.h
++++ w/drivers/gpu/drm/verisilicon/vs_dc.h
+@@ -24,6 +24,7 @@ struct vs_drm_dev;
+ struct vs_crtc;
+ 
+ struct vs_dc {
++	struct device *dev;
+ 	struct regmap *regs;
+ 	struct clk *core_clk;
+ 	struct clk *axi_clk;
+@@ -32,6 +33,7 @@ struct vs_dc {
+ 	struct clk *pix_clk[VSDC_MAX_OUTPUTS];
+ 	struct clk *lcd_clk;
+ 	struct reset_control_bulk_data rsts[VSDC_RESET_COUNT];
++	u32 primary_watermark;
+ 
+ 	struct vs_drm_dev *drm_dev;
+ 	struct vs_chip_identity identity;
+diff --git i/drivers/gpu/drm/verisilicon/vs_dc_top_regs.h w/drivers/gpu/drm/verisilicon/vs_dc_top_regs.h
+index 50509bbbf..ced4d56db 100644
+--- i/drivers/gpu/drm/verisilicon/vs_dc_top_regs.h
++++ w/drivers/gpu/drm/verisilicon/vs_dc_top_regs.h
+@@ -24,4 +24,6 @@
+ 
+ #define VSDC_TOP_CHIP_CUSTOMER_ID		0x0030
+ 
++#define VSDC_TOP_QOS_CONFIG			0x1A38
++
+ #endif /* _VS_DC_TOP_H_ */
+diff --git i/drivers/gpu/drm/verisilicon/vs_primary_plane.c w/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+index d5563c3b8..3696a3b69 100644
+--- i/drivers/gpu/drm/verisilicon/vs_primary_plane.c
++++ w/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+@@ -53,12 +53,6 @@ static int vs_primary_plane_atomic_check(struct drm_plane *plane,
+ 	return 0;
+ }
+ 
+-static void vs_primary_plane_commit(struct vs_dc *dc, unsigned int output)
+-{
+-	regmap_set_bits(dc->regs, VSDC_FB_CONFIG_EX(output),
+-			VSDC_FB_CONFIG_EX_COMMIT);
+-}
+-
+ static void vs_primary_plane_atomic_enable(struct drm_plane *plane,
+ 					   struct drm_atomic_commit *atomic_state)
+ {
+@@ -74,8 +68,6 @@ static void vs_primary_plane_atomic_enable(struct drm_plane *plane,
+ 	regmap_update_bits(dc->regs, VSDC_FB_CONFIG_EX(output),
+ 			   VSDC_FB_CONFIG_EX_DISPLAY_ID_MASK,
+ 			   VSDC_FB_CONFIG_EX_DISPLAY_ID(output));
+-
+-	vs_primary_plane_commit(dc, output);
+ }
+ 
+ static void vs_primary_plane_atomic_disable(struct drm_plane *plane,
+@@ -90,8 +82,6 @@ static void vs_primary_plane_atomic_disable(struct drm_plane *plane,
+ 
+ 	regmap_clear_bits(dc->regs, VSDC_FB_CONFIG_EX(output),
+ 			  VSDC_FB_CONFIG_EX_FB_EN);
+-
+-	vs_primary_plane_commit(dc, output);
+ }
+ 
+ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+@@ -132,6 +122,9 @@ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+ 		     lower_32_bits(dma_addr));
+ 	regmap_write(dc->regs, VSDC_FB_STRIDE(output),
+ 		     fb->pitches[0]);
++	if (dc->primary_watermark)
++		regmap_write(dc->regs, VSDC_FB_WATERMARK(output),
++			     dc->primary_watermark);
+ 
+ 	regmap_write(dc->regs, VSDC_FB_TOP_LEFT(output),
+ 		     VSDC_MAKE_PLANE_POS(state->crtc_x, state->crtc_y));
+@@ -143,8 +136,6 @@ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+ 
+ 	regmap_write(dc->regs, VSDC_FB_BLEND_CONFIG(output),
+ 		     VSDC_FB_BLEND_CONFIG_BLEND_DISABLE);
+-
+-	vs_primary_plane_commit(dc, output);
+ }
+ 
+ static const struct drm_plane_helper_funcs vs_primary_plane_helper_funcs = {
+diff --git i/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h w/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h
+index cbb125c46..fb8f827df 100644
+--- i/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h
++++ w/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h
+@@ -16,6 +16,7 @@
+ #define VSDC_FB_STRIDE(n)			(0x1408 + 0x4 * (n))
+ 
+ #define VSDC_FB_CONFIG(n)			(0x1518 + 0x4 * (n))
++#define VSDC_FB_CONFIG_UNDERFLOW			BIT(5)
+ #define VSDC_FB_CONFIG_CLEAR_EN			BIT(8)
+ #define VSDC_FB_CONFIG_ROT_MASK			GENMASK(13, 11)
+ #define VSDC_FB_CONFIG_ROT(v)			((v) << 11)
+@@ -41,6 +42,8 @@
+ #define VSDC_FB_CONFIG_EX_DISPLAY_ID_MASK	GENMASK(19, 19)
+ #define VSDC_FB_CONFIG_EX_DISPLAY_ID(v)		((v) << 19)
+ 
++#define VSDC_FB_WATERMARK(n)			(0x1CE8 + 0x4 * (n))
++
+ #define VSDC_FB_TOP_LEFT(n)			(0x24D8 + 0x4 * (n))
+ /* Fill with value generated with VSDC_MAKE_PLANE_POS(x, y) */
+ 
+-- 
+2.55.0

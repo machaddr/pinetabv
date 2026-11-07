@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <noreply@openai.com>
+Date: Sat, 24 Oct 2026 16:00:00 +0100
+Subject: [PATCH] ASoC: simple-card: power down PineTab-V on close
+
+ES8316 opts in to the ASoC power-down delay, which defaults to five
+seconds after playback closes. On PineTab-V that also keeps its two
+battery-fed TT8642 speaker amplifiers enabled, prolonging the reported
+noise after application playback has stopped.
+
+Ignore the delayed power-down only for the PineTab-V soundcard. Digital
+mute and the ordered DAPM shutdown still run; other simple-card users keep
+their existing delay. Userspace remains responsible for closing its PCM
+when idle.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: OpenAI Codex
+---
+diff --git a/sound/soc/generic/simple-card.c b/sound/soc/generic/simple-card.c
+--- a/sound/soc/generic/simple-card.c
++++ b/sound/soc/generic/simple-card.c
+@@ -220,6 +220,10 @@
+ 
+ 	dai_link->init			= simple_util_dai_init;
+ 	dai_link->ops			= &simple_ops;
++
++	/* Do not leave the battery-fed speaker amplifiers enabled after close. */
++	if (of_device_is_compatible(dev->of_node, "pine64,pinetab-v-soundcard"))
++		dai_link->ignore_pmdown_time = 1;
+ 
+ 	ret = simple_util_set_dailink_name(priv, dai_link, name);
+ end:
+-- 
+2.55.0

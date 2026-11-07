@@ -1,0 +1,74 @@
+From 0ea180783d1189ddf544465b0e3614abd2efa679 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 24 Oct 2026 11:30:17 +0100
+Subject: [PATCH] wifi: rtw89: keep the PineTab-V combo radio in USB 2 mode
+
+Both PineTab-V schematics route the on-board RTL8852BU through the
+USB 2-only GL850G hub. Only the module's USB_DP/DM pins are connected;
+its SuperSpeed RX/TX pairs are unconnected.
+
+The rtw89 USB probe now attempts USB 3 mode before registering the WLAN
+interface. The AX mode-switch register write disconnects the USB device
+and returns one, making probe skip core registration while waiting for
+re-enumeration. This is unsuitable for this hard-wired USB 2 path and
+also interrupts the Bluetooth interface on the same combo module. The
+reported failure has no WLAN interface and includes a USB disconnect
+alongside a failed Bluetooth register read.
+
+Keep this radio in its supported USB 2 mode. Match the PineTab-V machine,
+RTL8852B chip and GL850G parent USB ID together, so external adapters on
+the tablet's USB 3 connector retain the existing mode-switch behavior.
+Return zero before any switching register write, allowing the normal
+USB 2 core registration and initialization to continue. Log this policy
+so a physical boot capture can confirm that it was selected.
+
+The GL850G USB ID is specified by the existing genesys,gl850g binding.
+This removes a concrete mismatch with the board wiring; successful WLAN
+scans and Bluetooth initialization still require physical validation.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver1-20230614.pdf
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Link: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/Documentation/devicetree/bindings/usb/genesys,gl850g.yaml?h=v7.3
+Assisted-by: Codex (OpenAI)
+---
+ drivers/net/wireless/realtek/rtw89/usb.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/drivers/net/wireless/realtek/rtw89/usb.c b/drivers/net/wireless/realtek/rtw89/usb.c
+index aafa8b9..50a384f 100644
+--- a/drivers/net/wireless/realtek/rtw89/usb.c
++++ b/drivers/net/wireless/realtek/rtw89/usb.c
+@@ -2,6 +2,7 @@
+ /* Copyright(c) 2025  Realtek Corporation
+  */
+ 
++#include <linux/of.h>
+ #include <linux/usb.h>
+ #include "debug.h"
+ #include "mac.h"
+@@ -1137,6 +1138,22 @@ static int rtw89_usb_switch_mode_be(struct rtw89_dev *rtwdev)
+ static int rtw89_usb_switch_mode(struct rtw89_dev *rtwdev)
+ {
+ 	struct rtw89_usb *rtwusb = rtw89_usb_priv(rtwdev);
++	const struct usb_device *hub = rtwusb->udev->parent;
++
++	/*
++	 * PineTab-V routes its RTL8852BU through a USB 2-only GL850G hub.
++	 * The module's SuperSpeed pins are not connected.  Switching modes
++	 * disconnects both WLAN and Bluetooth without a usable USB 3 path.
++	 * Match the on-board hub as well as the machine so external adapters
++	 * connected through the tablet's USB 3 connector retain auto-switching.
++	 */
++	if (of_machine_is_compatible("pine64,pinetab-v") &&
++	    rtwdev->chip->chip_id == RTL8852B && hub &&
++	    le16_to_cpu(hub->descriptor.idVendor) == 0x05e3 &&
++	    le16_to_cpu(hub->descriptor.idProduct) == 0x0608) {
++		rtw89_info(rtwdev, "PineTab-V combo radio: retaining USB 2 mode\n");
++		return 0;
++	}
+ 
+ 	if (rtwusb->udev->speed == USB_SPEED_SUPER) {
+ 		rtw89_info(rtwdev,
+-- 
+2.56.0
+

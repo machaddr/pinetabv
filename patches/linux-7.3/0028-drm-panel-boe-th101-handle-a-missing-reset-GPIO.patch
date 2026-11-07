@@ -1,0 +1,42 @@
+From 51f71c8cf7f0038b2df8be67e879503635beed11 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:13:51 +0100
+Subject: [PATCH 28/53] drm/panel: boe-th101: handle a missing reset GPIO
+
+The reset descriptor is optional but the reset sequence dereferences it
+unconditionally. Skip that sequence when an integration leaves the panel
+reset line unconnected.
+
+Fixes: 7f58ebaccb67 ("drm/panel: boe-th101mb31ig002: switch to devm_gpiod_get_optional() for reset_gpio")
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+index 0ce116d87a5fc..c6a7767d5035a 100644
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -50,6 +50,9 @@ struct boe_th101mb31ig002 {
+ 
+ static void boe_th101mb31ig002_reset(struct boe_th101mb31ig002 *ctx)
+ {
++	if (!ctx->reset)
++		return;
++
+ 	gpiod_direction_output(ctx->reset, 0);
+ 	usleep_range(10, 100);
+ 	gpiod_direction_output(ctx->reset, 1);
+@@ -376,7 +379,8 @@ static int boe_th101mb31ig002_dsi_probe(struct mipi_dsi_device *dsi)
+ 		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->enable),
+ 				     "Failed to get enable GPIO\n");
+ 
+-	ctx->reset = devm_gpiod_get_optional(&dsi->dev, "reset", GPIOD_OUT_HIGH);
++	ctx->reset = devm_gpiod_get_optional(&dsi->dev, "reset",
++					     GPIOD_OUT_HIGH);
+ 	if (IS_ERR(ctx->reset))
+ 		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->reset),
+ 				     "Failed to get reset GPIO\n");
+-- 
+2.55.0
+

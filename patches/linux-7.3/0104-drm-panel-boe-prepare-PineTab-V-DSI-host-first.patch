@@ -1,0 +1,61 @@
+From 4dc12a98d442c39d37cc9064199847bd20a7c16a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Wed, 26 Aug 2026 18:20:00 +0100
+Subject: [PATCH] drm/panel: boe: prepare PineTab-V DSI host first
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The TH101MB31IG002-28A controller used by PineTab-V requires the DSI
+lanes to be in LP-11 before its reset sequence.  The driver tries to
+establish LP-11 with a DCS no-op, but without prepare_prev_first that
+transfer happens before the DSI bridge pre-enable callback.
+
+The Cadence host therefore acquires and releases a temporary runtime PM
+reference for every command.  On JH7110, releasing that reference powers
+off and resets the external D-PHY, so LP-11 is not maintained across the
+panel reset and initialization table.  This makes panel startup depend on
+timing and can leave the backlight enabled without video.
+
+Request host-first prepare ordering for the PineTab-V panel descriptor.
+The Cadence bridge then holds its runtime PM reference, and the JH7110
+D-PHY remains configured, throughout reset and panel initialization.
+Leave the ordering unchanged for the other panels supported by this
+driver.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../gpu/drm/panel/panel-boe-th101mb31ig002-28a.c  | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+index 6dc24bf8fa34..b23d7307efb2 100644
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -39,6 +39,7 @@ struct panel_desc {
+ 	unsigned int power_off_delay_ms;
+ 	unsigned int init_retries;
+ 	bool keep_powered_without_reset;
++	bool prepare_prev_first;
+ };
+ 
+ struct boe_th101mb31ig002 {
+@@ -380,6 +381,7 @@ static const struct panel_desc pinetab_v_desc = {
+ 	.lp11_to_reset_delay_ms = 5,
+ 	.init_retries = 2,
+ 	.keep_powered_without_reset = true,
++	.prepare_prev_first = true,
+ };
+ 
+ static const struct drm_display_mode starry_er88577_default_mode = {
+@@ -469,6 +471,7 @@ static int boe_th101mb31ig002_dsi_probe(struct mipi_dsi_device *dsi)
+ 	dsi->format = desc->format;
+ 	dsi->mode_flags = desc->mode_flags;
+ 	ctx->desc = desc;
++	ctx->panel.prepare_prev_first = desc->prepare_prev_first;
+ 
+ 	ctx->power = devm_regulator_get(&dsi->dev, "power");
+ 	if (IS_ERR(ctx->power))
+-- 
+2.55.0

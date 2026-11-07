@@ -1,0 +1,32 @@
+From 5dbde6ca5b24537576e3789f2d4881ab43b3a9df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:20:29 +0100
+Subject: [PATCH 02/53] cache: sifive: select non-coherent DMA support on
+ StarFive
+
+The JH7110 composable-cache match registers non-standard cache
+maintenance callbacks for non-coherent DMA. Select the RISC-V
+infrastructure directly on StarFive instead of relying on an unrelated
+CPU erratum or a particular defconfig to enable it.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/cache/Kconfig | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/cache/Kconfig b/drivers/cache/Kconfig
+index 1518449d47b51..bfea78e58371a 100644
+--- a/drivers/cache/Kconfig
++++ b/drivers/cache/Kconfig
+@@ -19,6 +19,8 @@ config AX45MP_L2_CACHE
+ config SIFIVE_CCACHE
+ 	bool "Sifive Composable Cache controller"
+ 	depends on ARCH_SIFIVE || ARCH_STARFIVE
++	select RISCV_DMA_NONCOHERENT if ARCH_STARFIVE
++	select RISCV_NONSTANDARD_CACHE_OPS if ARCH_STARFIVE
+ 	help
+ 	  Support for the composable cache controller on SiFive platforms.
+ 
+-- 
+2.55.0
+

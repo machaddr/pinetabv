@@ -1,0 +1,108 @@
+From: Codex <noreply@openai.com>
+Date: Sat, 7 Nov 2026 12:00:00 +0000
+Subject: [PATCH] media: starfive: enumerate discrete crops for desktop cameras
+
+The PineTab-V YUV node advertises a stepwise crop range. PipeWire 1.4.2,
+shipped by Debian 13, builds its SPA rectangle choice with the maximum
+width/height as the step instead of the V4L2 step_width/step_height. A
+640x480 client consequently fails negotiation against the front camera's
+64..1280 x 64..720 range, despite CAMSS accepting that crop with S_FMT.
+
+Enumerate the active sensor's aligned native size followed by a finite set
+of common crops that fit its bounds. Skip duplicate native sizes. Leave
+arbitrary aligned S_FMT crops and the raw node's interface unchanged.
+This avoids the broken stepwise translation without replacing Debian's
+PipeWire package or changing sensor wiring.
+
+The regression compiles the actual CAMSS enumeration functions and uses
+SPA's real pod filter to reproduce rejection of the old maximum-as-step
+choice and acceptance of the discrete sizes. It also checks that every
+advertised size has a frame interval from the active sensor.
+
+Link: https://packages.debian.org/trixie/pipewire
+Link: https://github.com/PipeWire/pipewire/blob/1.4.2/spa/plugins/v4l2/v4l2-utils.c
+Assisted-by: Codex (OpenAI)
+---
+
+diff --git a/drivers/staging/media/starfive/camss/stf-video.c b/drivers/staging/media/starfive/camss/stf-video.c
+--- a/drivers/staging/media/starfive/camss/stf-video.c
++++ b/drivers/staging/media/starfive/camss/stf-video.c
+@@ -843,14 +843,54 @@
+ 	return 0;
+ }
+ 
++static int stf_video_enum_yuv_size(const struct v4l2_mbus_framefmt *bounds,
++				   struct v4l2_frmsizeenum *fsize)
++{
++	static const struct v4l2_frmsize_discrete sizes[] = {
++		{ 1920, 1080 }, { 1280, 720 }, { 1024, 768 }, { 800, 600 },
++		{ 640, 480 }, { 640, 360 }, { 320, 240 }, { 320, 180 },
++		{ 160, 120 },
++	};
++	struct v4l2_frmsize_discrete native = {
++		.width = bounds->width & ~7,
++		.height = bounds->height & ~1,
++	};
++	unsigned int index = 0, i;
++
++	if (native.width < STFCAMSS_FRAME_MIN_WIDTH ||
++	    native.height < STFCAMSS_FRAME_MIN_HEIGHT)
++		return -EINVAL;
++
++	/*
++	 * PipeWire's V4L2 backend encodes a stepwise range's maximum as its
++	 * step, which prevents common crop sizes from matching a video client.
++	 * Enumerate useful discrete crops; S_FMT still accepts arbitrary crops.
++	 */
++	if (!fsize->index) {
++		fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
++		fsize->discrete = native;
++		return 0;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(sizes); i++) {
++		if (sizes[i].width > native.width || sizes[i].height > native.height ||
++		    (sizes[i].width == native.width && sizes[i].height == native.height))
++			continue;
++		if (++index == fsize->index) {
++			fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
++			fsize->discrete = sizes[i];
++			return 0;
++		}
++	}
++
++	return -EINVAL;
++}
++
+ static int video_enum_framesizes(struct file *file, void *fh,
+ 				 struct v4l2_frmsizeenum *fsize)
+ {
+ 	struct stfcamss_video *video = video_drvdata(file);
+ 	unsigned int i;
+-
+-	if (fsize->index)
+-		return -EINVAL;
+ 
+ 	for (i = 0; i < video->nformats; i++) {
+ 		if (video->formats[i].pixelformat == fsize->pixel_format)
+@@ -870,15 +910,11 @@
+ 		if (ret)
+ 			return ret;
+ 
+-		fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+-		fsize->stepwise.min_width = STFCAMSS_FRAME_MIN_WIDTH;
+-		fsize->stepwise.max_width = bounds.width & ~7;
+-		fsize->stepwise.min_height = STFCAMSS_FRAME_MIN_HEIGHT;
+-		fsize->stepwise.max_height = bounds.height & ~1;
+-		fsize->stepwise.step_width = 8;
+-		fsize->stepwise.step_height = 2;
+-		return 0;
+-	}
++		return stf_video_enum_yuv_size(&bounds, fsize);
++	}
++
++	if (fsize->index)
++		return -EINVAL;
+ 
+ 	fsize->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
+ 	fsize->stepwise.min_width = STFCAMSS_FRAME_MIN_WIDTH;

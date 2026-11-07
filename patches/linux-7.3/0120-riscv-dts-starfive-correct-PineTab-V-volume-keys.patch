@@ -1,0 +1,62 @@
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 24 Oct 2026 15:45:00 +0100
+Subject: [PATCH] riscv: dts: starfive: correct PineTab-V volume key codes
+
+Physical testing reports that both volume buttons have inverted actions.
+Correct the keycodes and matching labels/node names rather than changing
+GNOME shortcuts, so every input consumer receives the correct events.
+
+Keep the GPIO selection, active polarity and debounce interval unchanged.
+The second key uses system GPIO51 on revision 1 and AON GPIO0 on revision
+2; revision 2 still reserves system GPIO51 for the panel reset.
+
+Assisted-by: Codex (OpenAI)
+---
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts
+@@ -21,9 +21,9 @@
+ };
+ 
+ &gpio_keys {
+-	volume-down-key {
+-		label = "Volume down";
+-		linux,code = <KEY_VOLUMEDOWN>;
++	volume-up-key {
++		label = "Volume up";
++		linux,code = <KEY_VOLUMEUP>;
+ 		gpios = <&sysgpio 51 GPIO_ACTIVE_LOW>;
+ 		debounce-interval = <10>;
+ 	};
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts
+@@ -15,9 +15,9 @@
+ };
+ 
+ &gpio_keys {
+-	volume-down-key {
+-		label = "Volume down";
+-		linux,code = <KEY_VOLUMEDOWN>;
++	volume-up-key {
++		label = "Volume up";
++		linux,code = <KEY_VOLUMEUP>;
+ 		gpios = <&aongpio 0 GPIO_ACTIVE_HIGH>;
+ 		debounce-interval = <10>;
+ 	};
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -158,9 +158,9 @@
+ 			wakeup-source;
+ 		};
+ 
+-		volume-up-key {
+-			label = "Volume up";
+-			linux,code = <KEY_VOLUMEUP>;
++		volume-down-key {
++			label = "Volume down";
++			linux,code = <KEY_VOLUMEDOWN>;
+ 			gpios = <&sysgpio 49 GPIO_ACTIVE_LOW>;
+ 			debounce-interval = <10>;
+ 		};

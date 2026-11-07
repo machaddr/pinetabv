@@ -1,0 +1,227 @@
+From 2429996e4e0e1aa142f4bfb6153c6fb6219634a5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 24 Oct 2026 09:38:38 +0100
+Subject: [PATCH] drm: verisilicon: flush scanout when uncached mappings are
+ unavailable
+
+JH7110's U74 cores do not implement Svpbmt or Xtheadmae. On this platform
+pgprot_writecombine() is a no-op: allocating with dma_alloc_wc() does not
+make CPU writes visible to the non-coherent DC8200. Merely describing the
+controller as dma-noncoherent does not fix these falsely coherent CPU
+mappings. Unflushed rows can produce stripes in both fbcon and a software
+rendered desktop, consistent with the repainted-menu corruption in the
+supplied PineTab-V videos; physical tablet validation is still needed.
+
+Adapt the non-coherent mapping approach posted by Dominique Belhachemi
+and Icenowy Zheng. Check both firmware DMA coherence and the actual
+mapping capability before selecting cached non-coherent GEM allocations.
+Enable damage clips and sync the affected rows to the device before
+programming both primary and cursor planes. Keep consistent allocations
+on platforms which can really map them uncached.
+
+Retain the atomic dirty framebuffer callback and fbdev shadow buffer.
+The console therefore draws into its shadow, copies damage to scanout,
+and submits a dirty atomic transaction which performs the cache sync.
+Log the selected cache-maintenance path for physical UART validation.
+The capability check remains local to this driver instead of introducing
+a new DRM architecture API from the RFC.
+
+Link: https://lore.kernel.org/r/20260930073528.3369325-2-zhengxingda@iscas.ac.cn
+Link: https://lore.kernel.org/r/20260930073528.3369325-3-zhengxingda@iscas.ac.cn
+Assisted-by: Codex (OpenAI)
+---
+ drivers/gpu/drm/verisilicon/vs_cursor_plane.c |  9 +++++
+ drivers/gpu/drm/verisilicon/vs_drm.c          | 35 +++++++++++++++++++
+ drivers/gpu/drm/verisilicon/vs_drm.h          |  6 ++++
+ .../gpu/drm/verisilicon/vs_primary_plane.c    |  9 +++++
+ 4 files changed, 59 insertions(+)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_cursor_plane.c b/drivers/gpu/drm/verisilicon/vs_cursor_plane.c
+index da456dc..408fc2d 100644
+--- a/drivers/gpu/drm/verisilicon/vs_cursor_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_cursor_plane.c
+@@ -13,6 +13,7 @@
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_blend.h>
+ #include <drm/drm_crtc.h>
++#include <drm/drm_fb_dma_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
+ #include <drm/drm_gem_atomic_helper.h>
+@@ -23,6 +24,7 @@
+ #include "vs_crtc.h"
+ #include "vs_plane.h"
+ #include "vs_dc.h"
++#include "vs_drm.h"
+ #include "vs_hwdb.h"
+ #include "vs_cursor_plane_regs.h"
+ 
+@@ -135,6 +137,8 @@ static void vs_cursor_plane_atomic_disable(struct drm_plane *plane,
+ static void vs_cursor_plane_atomic_update(struct drm_plane *plane,
+ 					   struct drm_atomic_commit *atomic_state)
+ {
++	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(atomic_state,
++									   plane);
+ 	struct drm_plane_state *state = drm_atomic_get_new_plane_state(atomic_state,
+ 								       plane);
+ 	struct drm_framebuffer *fb = state->fb;
+@@ -149,6 +153,8 @@ static void vs_cursor_plane_atomic_update(struct drm_plane *plane,
+ 		return;
+ 	}
+ 
++	drm_fb_dma_sync_non_coherent(plane->dev, old_state, state);
++
+ 	vcrtc = drm_crtc_to_vs_crtc(crtc);
+ 	output = vcrtc->id;
+ 	dc = vcrtc->dc;
+@@ -270,5 +276,8 @@ struct drm_plane *vs_cursor_plane_init(struct drm_device *drm_dev,
+ 	drm_plane_helper_add(plane, &vs_cursor_plane_helper_funcs);
+ 	drm_plane_create_blend_mode_property(plane, BIT(DRM_MODE_BLEND_COVERAGE));
+ 
++	if (to_vs_drm_dev(drm_dev)->map_noncoherent)
++		drm_plane_enable_fb_damage_clips(plane);
++
+ 	return plane;
+ }
+diff --git a/drivers/gpu/drm/verisilicon/vs_drm.c b/drivers/gpu/drm/verisilicon/vs_drm.c
+index 524d462..c8d2205 100644
+--- a/drivers/gpu/drm/verisilicon/vs_drm.c
++++ b/drivers/gpu/drm/verisilicon/vs_drm.c
+@@ -5,11 +5,16 @@
+ 
+ #include <linux/aperture.h>
+ #include <linux/dma-mapping.h>
++#include <linux/of_address.h>
+ #include <linux/platform_device.h>
+ #include <linux/module.h>
+ #include <linux/regmap.h>
+ #include <linux/console.h>
+ 
++#ifdef CONFIG_RISCV
++#include <linux/pgtable.h>
++#endif
++
+ #include <drm/clients/drm_client_setup.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_drv.h>
+@@ -49,6 +54,31 @@ static int vs_gem_dumb_create(struct drm_file *file_priv,
+ 
+ DEFINE_DRM_GEM_FOPS(vs_drm_driver_fops);
+ 
++static bool vs_drm_can_map_coherent(void)
++{
++#ifdef CONFIG_RISCV
++	/* JH7110 has neither Svpbmt nor another uncached PTE encoding. */
++	return pgprot_val(pgprot_writecombine(PAGE_KERNEL)) !=
++	       pgprot_val(PAGE_KERNEL);
++#else
++	return true;
++#endif
++}
++
++static struct drm_gem_object *vs_gem_create_object(struct drm_device *drm,
++						   size_t size)
++{
++	struct drm_gem_dma_object *obj;
++
++	obj = kzalloc_obj(*obj);
++	if (!obj)
++		return ERR_PTR(-ENOMEM);
++
++	obj->map_noncoherent = to_vs_drm_dev(drm)->map_noncoherent;
++
++	return &obj->base;
++}
++
+ static const struct drm_driver vs_drm_driver = {
+ 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+ 	.fops			= &vs_drm_driver_fops,
+@@ -58,6 +88,7 @@ static const struct drm_driver vs_drm_driver = {
+ 	.minor	= DRIVER_MINOR,
+ 
+ 	/* GEM Operations */
++	.gem_create_object	= vs_gem_create_object,
+ 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(vs_gem_dumb_create),
+ 	DRM_FBDEV_DMA_DRIVER_OPS,
+ };
+@@ -98,7 +129,11 @@ int vs_drm_initialize(struct vs_dc *dc, struct platform_device *pdev)
+ 
+ 	drm = &vdrm->base;
+ 	vdrm->dc = dc;
++	vdrm->map_noncoherent = !of_dma_is_coherent(dev->of_node) &&
++				!vs_drm_can_map_coherent();
+ 	dc->drm_dev = vdrm;
++	if (vdrm->map_noncoherent)
++		drm_info(drm, "using explicit cache maintenance for scanout\n");
+ 
+ 	ret = drmm_mode_config_init(drm);
+ 	if (ret)
+diff --git a/drivers/gpu/drm/verisilicon/vs_drm.h b/drivers/gpu/drm/verisilicon/vs_drm.h
+index 6063382..0f1b211 100644
+--- a/drivers/gpu/drm/verisilicon/vs_drm.h
++++ b/drivers/gpu/drm/verisilicon/vs_drm.h
+@@ -18,8 +18,14 @@ struct vs_drm_dev {
+ 
+ 	struct vs_dc *dc;
+ 	struct vs_crtc *crtcs[VSDC_MAX_OUTPUTS];
++	bool map_noncoherent;
+ };
+ 
++static inline struct vs_drm_dev *to_vs_drm_dev(struct drm_device *drm)
++{
++	return container_of(drm, struct vs_drm_dev, base);
++}
++
+ int vs_drm_initialize(struct vs_dc *dc, struct platform_device *pdev);
+ void vs_drm_finalize(struct vs_dc *dc);
+ void vs_drm_shutdown_handler(struct vs_dc *dc);
+diff --git a/drivers/gpu/drm/verisilicon/vs_primary_plane.c b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+index 3696a3b..b95a045 100644
+--- a/drivers/gpu/drm/verisilicon/vs_primary_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+@@ -8,6 +8,7 @@
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_crtc.h>
++#include <drm/drm_fb_dma_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
+ #include <drm/drm_gem_atomic_helper.h>
+@@ -18,6 +19,7 @@
+ #include "vs_crtc.h"
+ #include "vs_plane.h"
+ #include "vs_dc.h"
++#include "vs_drm.h"
+ #include "vs_primary_plane_regs.h"
+ 
+ static int vs_primary_plane_atomic_check(struct drm_plane *plane,
+@@ -87,6 +89,8 @@ static void vs_primary_plane_atomic_disable(struct drm_plane *plane,
+ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+ 					   struct drm_atomic_commit *atomic_state)
+ {
++	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(atomic_state,
++									   plane);
+ 	struct drm_plane_state *state = drm_atomic_get_new_plane_state(atomic_state,
+ 								       plane);
+ 	struct vs_plane_state *vs_state = to_vs_plane_state(state);
+@@ -102,6 +106,8 @@ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+ 		return;
+ 	}
+ 
++	drm_fb_dma_sync_non_coherent(plane->dev, old_state, state);
++
+ 	vcrtc = drm_crtc_to_vs_crtc(crtc);
+ 	output = vcrtc->id;
+ 	dc = vcrtc->dc;
+@@ -170,5 +176,8 @@ struct drm_plane *vs_primary_plane_init(struct drm_device *drm_dev, struct vs_dc
+ 
+ 	drm_plane_helper_add(plane, &vs_primary_plane_helper_funcs);
+ 
++	if (to_vs_drm_dev(drm_dev)->map_noncoherent)
++		drm_plane_enable_fb_damage_clips(plane);
++
+ 	return plane;
+ }
+-- 
+2.56.0
+

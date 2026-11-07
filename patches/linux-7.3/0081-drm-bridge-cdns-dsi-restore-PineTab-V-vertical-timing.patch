@@ -1,0 +1,79 @@
+From 56c2e23fe9ff9020576d8bd1a095349e41f24432 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 19:10:00 +0100
+Subject: [PATCH] drm/bridge: cdns-dsi: restore PineTab-V vertical timing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Cadence core uses its legacy vertical timing encoding, which subtracts
+one from VBP and adds one to VSA.  The JH7110 vendor display path and
+PineTab-V U-Boot instead program the actual VBP and VSA with VFP minus
+one.  For the panel 5/5/5 porches this is 0x4145 rather than 0x5146.
+
+Carry the generic values in the checked mode configuration, then override
+them only for the PineTab-V panel through the existing JH7110 mode fixup.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c   | 8 +++++---
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h   | 3 +++
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c | 4 ++++
+ 3 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+index 625d871bc..9bfd1a658 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+@@ -509,6 +509,9 @@ static int cdns_dsi_mode2cfg(struct cdns_dsi *dsi,
+ 	dsi_cfg->hfp = dpi_to_dsi_timing(dpi_hfp, bpp, DSI_HFP_FRAME_OVERHEAD);
+ 
+ 	dsi_cfg->htotal = dsi_cfg->hact + dsi_cfg->hfp + DSI_HFP_FRAME_OVERHEAD;
++	dsi_cfg->vbp = vm->vback_porch - 1;
++	dsi_cfg->vfp = vm->vfront_porch;
++	dsi_cfg->vsa = vm->vsync_len + 1;
+ 
+ 	if (sync_pulse) {
+ 		dsi_cfg->htotal += dsi_cfg->hbp + DSI_HBP_FRAME_PULSE_OVERHEAD;
+@@ -856,9 +859,8 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 	writel(HFP_LEN(dsi_cfg.hfp) | HACT_LEN(dsi_cfg.hact),
+ 	       dsi->regs + VID_HSIZE2);
+ 
+-	writel(VBP_LEN(mode->crtc_vtotal - mode->crtc_vsync_end - 1) |
+-	       VFP_LEN(mode->crtc_vsync_start - mode->crtc_vdisplay) |
+-	       VSA_LEN(mode->crtc_vsync_end - mode->crtc_vsync_start + 1),
++	writel(VBP_LEN(dsi_cfg.vbp) | VFP_LEN(dsi_cfg.vfp) |
++	       VSA_LEN(dsi_cfg.vsa),
+ 	       dsi->regs + VID_VSIZE1);
+ 	writel(mode->crtc_vdisplay, dsi->regs + VID_VSIZE2);
+ 
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+index ae2fcc0d3..02b7723b1 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+@@ -39,6 +39,9 @@ struct cdns_dsi_cfg {
+ 	unsigned int hbp;
+ 	unsigned int hact;
+ 	unsigned int htotal;
++	unsigned int vfp;
++	unsigned int vsa;
++	unsigned int vbp;
+ };
+ 
+ struct cdns_dsi_input {
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index ddcf6ba5c..539f8799f 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -168,6 +168,10 @@ static int cdns_dsi_jh7110_mode_fixup(struct cdns_dsi *dsi,
+ 		dsi_cfg->hbp = JH7110_PINETAB_V_DSI_HBP;
+ 		dsi_cfg->hfp = JH7110_PINETAB_V_DSI_HFP;
+ 		dsi_cfg->htotal = JH7110_PINETAB_V_DSI_HTOTAL;
++		/* The JH7110 wrapper uses the vendor Cadence V1 encoding. */
++		dsi_cfg->vbp = vm->vback_porch;
++		dsi_cfg->vfp = vm->vfront_porch - 1;
++		dsi_cfg->vsa = vm->vsync_len;
+ 	}
+ 
+ 	dpi_htotal = vm->hactive + vm->hfront_porch + vm->hsync_len +

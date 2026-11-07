@@ -1,0 +1,33 @@
+From 5f7512d5b8d124db5762ddf5080013d0642d5715 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 8 Aug 2026 16:56:52 +0100
+Subject: [PATCH 46/53] power: supply: cw2015: fix alert threshold programming
+
+cw_init() clears the ATHD field and then ORs in the bitwise complement of
+the requested value. That sets unrelated CONFIG bits and programs the
+inverse threshold instead of the requested threshold.
+
+Use the same direct ATHD encoding as the profile-update path.
+
+Fixes: b4c7715c10c1 ("power: supply: add CellWise cw2015 fuel gauge driver")
+Assisted-by: Codex:gpt-5
+---
+ drivers/power/supply/cw2015_battery.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/power/supply/cw2015_battery.c b/drivers/power/supply/cw2015_battery.c
+index 286524d2318cb..ad37c88a75186 100644
+--- a/drivers/power/supply/cw2015_battery.c
++++ b/drivers/power/supply/cw2015_battery.c
+@@ -173,7 +173,7 @@ static int cw_init(struct cw_battery *cw_bat)
+ 	if ((reg_val & CW2015_MASK_ATHD) != CW2015_ATHD(cw_bat->alert_level)) {
+ 		dev_dbg(cw_bat->dev, "Setting new alert level\n");
+ 		reg_val &= ~CW2015_MASK_ATHD;
+-		reg_val |= ~CW2015_ATHD(cw_bat->alert_level);
++		reg_val |= CW2015_ATHD(cw_bat->alert_level);
+ 		ret = regmap_write(cw_bat->regmap, CW2015_REG_CONFIG, reg_val);
+ 		if (ret)
+ 			return ret;
+-- 
+2.55.0
+

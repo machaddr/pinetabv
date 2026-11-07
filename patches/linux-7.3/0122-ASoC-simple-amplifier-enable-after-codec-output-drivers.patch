@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <noreply@openai.com>
+Date: Sat, 24 Oct 2026 16:00:00 +0100
+Subject: [PATCH] ASoC: simple-amplifier: enable after codec output drivers
+
+GPIO-only amplifier widgets use SND_SOC_NOPM and subsequence zero, like
+codec output-driver widgets. DAPM orders otherwise equal widgets by
+register number, so the external amplifier with register -1 is enabled
+before the codec output drivers with real registers. The amplifier then
+reproduces the codec's output-stage power-up transients.
+
+Add an output-driver widget helper with a subsequence, parallel to the
+existing PGA helper, and assign simple-amplifier's external stage
+subsequence one. DAPM then enables the codec output drivers first and
+disables the external amplifier first on shutdown. No delay is added.
+
+On both PineTab-V revisions, TT8642 speaker amplifiers U26/U27 share
+GPIO50 and receive their signals from ES8316 headphone outputs. The
+reported start/stop noise affects the speakers while headphones are clean.
+
+Link: https://docs.kernel.org/sound/soc/pops-clicks.html
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: OpenAI Codex
+---
+diff --git a/include/sound/soc-dapm.h b/include/sound/soc-dapm.h
+index 33c4a3e9c..361dd2409 100644
+--- a/include/sound/soc-dapm.h
++++ b/include/sound/soc-dapm.h
+@@ -202,6 +202,13 @@ struct snd_soc_dapm_context;
+ 	.event = wevent, .event_flags = wflags}
+ 
+ /* additional sequencing control within an event type */
++#define SND_SOC_DAPM_OUT_DRV_S(wname, wsubseq, wreg, wshift, winvert, \
++	wevent, wflags) \
++((struct snd_soc_dapm_widget) { \
++	.id = snd_soc_dapm_out_drv, .name = wname, \
++	SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), \
++	.event = wevent, .event_flags = wflags, \
++	.subseq = wsubseq})
+ #define SND_SOC_DAPM_PGA_S(wname, wsubseq, wreg, wshift, winvert, \
+ 	wevent, wflags) \
+ (struct snd_soc_dapm_widget) { \
+diff --git a/sound/soc/codecs/simple-amplifier.c b/sound/soc/codecs/simple-amplifier.c
+index 07c040355..940689d53 100644
+--- a/sound/soc/codecs/simple-amplifier.c
++++ b/sound/soc/codecs/simple-amplifier.c
+@@ -117,8 +117,9 @@ static int simple_amp_power_event(struct snd_soc_dapm_widget *w,
+ static const struct snd_soc_dapm_widget simple_amp_dapm_widgets[] = {
+ 	SND_SOC_DAPM_INPUT("INL"),
+ 	SND_SOC_DAPM_INPUT("INR"),
+-	SND_SOC_DAPM_OUT_DRV_E("DRV", SND_SOC_NOPM, 0, 0, NULL, 0, simple_amp_power_event,
+-			       (SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD)),
++	/* Enable after the source codec's output drivers, disable before them. */
++	SND_SOC_DAPM_OUT_DRV_S("DRV", 1, SND_SOC_NOPM, 0, 0, simple_amp_power_event,
++			     SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
+ 	SND_SOC_DAPM_OUTPUT("OUTL"),
+ 	SND_SOC_DAPM_OUTPUT("OUTR"),
+ 	SND_SOC_DAPM_REGULATOR_SUPPLY("VCC", 20, 0),
+-- 
+2.55.0

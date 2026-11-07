@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 18:12:00 +0100
+Subject: [PATCH 3/3] drm/bridge: cdns-dsi: release JH7110 clock lane for video
+
+JH7110 forces the Cadence DSI clock lane into stop state while the panel
+initialization commands are transferred in low-power mode.  The core
+then enables the video interface without giving the platform a chance
+to release that forced state, so no video clock reaches the panel.
+
+Add a platform callback immediately before video is enabled and use it
+to clear CLK_FORCE_STOP on JH7110.  This mirrors the working StarFive
+sequence.  It does not enable continuous-clock mode; a non-continuous
+clock remains controlled separately by MCTL_MAIN_PHY_CTL.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../gpu/drm/bridge/cadence/cdns-dsi-core.c    | 5 +++++
+ .../gpu/drm/bridge/cadence/cdns-dsi-core.h    | 2 ++
+ .../drm/bridge/cadence/cdns-dsi-jh7110.c      | 6 ++++++
+ 3 files changed, 13 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+index 2577d6b23c55..625d871bc088 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+@@ -954,6 +954,11 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 		       VID_IGNORE_MISS_VSYNC;
+ 
+ 		writel(tmp, dsi->regs + VID_MAIN_CTL);
++
++		tmp = readl(dsi->regs + MCTL_MAIN_EN);
++		if (dsi->platform_ops && dsi->platform_ops->video_start)
++			dsi->platform_ops->video_start(dsi, &tmp);
++		writel(tmp, dsi->regs + MCTL_MAIN_EN);
+ 	}
+ 
+ 	tmp = readl(dsi->regs + MCTL_MAIN_DATA_CTL);
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+index 8a2856c522f4..ae2fcc0d388f 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.h
+@@ -60,6 +60,7 @@ struct cdns_dsi;
+  * @mode_fixup: Adjust PHY and DSI timings for platform clock constraints
+  * @transfer: Prepare the platform before a DSI command transfer
+  * @link_config: Adjust link control registers before starting the link
++ * @video_start: Adjust the main enable register before starting video
+  * @link_started: Called after starting a previously disabled DSI link
+  */
+ struct cdns_dsi_platform_ops {
+@@ -74,6 +75,7 @@ struct cdns_dsi_platform_ops {
+ 			  struct phy_configure_opts_mipi_dphy *phy_cfg);
+ 	int (*transfer)(struct cdns_dsi *dsi);
+ 	void (*link_config)(struct cdns_dsi *dsi, u32 *phy_ctl, u32 *main_en);
++	void (*video_start)(struct cdns_dsi *dsi, u32 *main_en);
+ 	void (*link_started)(struct cdns_dsi *dsi);
+ };
+ 
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index 1d91c3958f41..ddcf6ba5cfd2 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -205,6 +205,11 @@ static void cdns_dsi_jh7110_link_config(struct cdns_dsi *dsi, u32 *phy_ctl,
+ 		*main_en |= JH7110_DSI_CLK_FORCE_STOP;
+ }
+ 
++static void cdns_dsi_jh7110_video_start(struct cdns_dsi *dsi, u32 *main_en)
++{
++	*main_en &= ~JH7110_DSI_CLK_FORCE_STOP;
++}
++
+ static void cdns_dsi_jh7110_link_started(struct cdns_dsi *dsi)
+ {
+ 	usleep_range(20, 40);
+@@ -217,5 +222,6 @@ const struct cdns_dsi_platform_ops dsi_jh7110_ops = {
+ 	.mode_fixup = cdns_dsi_jh7110_mode_fixup,
+ 	.transfer = cdns_dsi_jh7110_transfer,
+ 	.link_config = cdns_dsi_jh7110_link_config,
++	.video_start = cdns_dsi_jh7110_video_start,
+ 	.link_started = cdns_dsi_jh7110_link_started,
+ };
+-- 
+2.55.0

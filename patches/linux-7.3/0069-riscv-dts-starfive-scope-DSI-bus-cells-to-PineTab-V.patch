@@ -1,0 +1,49 @@
+From 55809bd3f97694d0336b456da750c8c7706c39cc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 16:49:52 +0100
+Subject: [PATCH] riscv: dts: starfive: scope DSI bus cells to PineTab-V
+
+The JH7110 SoC DSI node declares address and size cells even though no
+base SoC child uses them. This makes dtc report
+avoid_unnecessary_addr_size warnings for every JH7110 board that does not
+add a DSI peripheral.
+
+Move the bus-cell declarations to the PineTab-V board node alongside its
+direct panel@0 child. Both PineTab-V DTBs retain the same DSI bus
+semantics while the other JH7110 DTBs no longer carry unused cells.
+
+Assisted-by: Codex:gpt-5
+---
+ arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi | 2 ++
+ arch/riscv/boot/dts/starfive/jh7110.dtsi                  | 2 --
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+index 60921fdf2b6ca..7029ef099884a 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -782,6 +782,8 @@ &mipi_dphy {
+ };
+ 
+ &mipi_dsi {
++	#address-cells = <1>;
++	#size-cells = <0>;
+ 	assigned-clocks = <&voutcrg JH7110_VOUTCLK_DSITX_DPI>;
+ 	assigned-clock-parents = <&voutcrg JH7110_VOUTCLK_DC8200_PIX>;
+ 	status = "okay";
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index 365747ceb0c9a..e40d46118f0ec 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1402,8 +1402,6 @@ mipi_dsi: dsi@295d0000 {
+ 			phys = <&mipi_dphy>;
+ 			phy-names = "dphy";
+ 			power-domains = <&pwrc JH7110_PD_VOUT>;
+-			#address-cells = <1>;
+-			#size-cells = <0>;
+ 			status = "disabled";
+ 
+ 			ports {
+-- 
+2.55.0
+

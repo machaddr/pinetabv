@@ -1,0 +1,70 @@
+From 1625a84b32edc36b3be8ba3ffb5936fd2bf86728 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:34:58 +0100
+Subject: [PATCH 44/53] dt-bindings: power: supply: bq25890: describe manual
+ DPDM and OTG
+
+Add an opt-in switch for disabling automatic D+/D- source detection and
+describe an OTG regulator child with an optional external enable GPIO.
+
+Assisted-by: Codex:gpt-5
+---
+ .../bindings/power/supply/bq25890.yaml        | 26 +++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/power/supply/bq25890.yaml b/Documentation/devicetree/bindings/power/supply/bq25890.yaml
+index 655d158aad03b..4dd8e17f8fc50 100644
+--- a/Documentation/devicetree/bindings/power/supply/bq25890.yaml
++++ b/Documentation/devicetree/bindings/power/supply/bq25890.yaml
+@@ -78,6 +78,25 @@ properties:
+     maximum: 3250000
+     multipleOf: 50000
+ 
++  ti,disable-auto-dpdm:
++    type: boolean
++    description:
++      Disable automatic D+/D- input-source detection. This keeps a configured
++      input current limit from being changed when an input source is attached.
++
++  usb-otg-vbus:
++    type: object
++    description: OTG boost regulator.
++    $ref: /schemas/regulator/regulator.yaml#
++    unevaluatedProperties: false
++
++    properties:
++      enable-gpios:
++        description:
++          External active-high OTG enable required together with the internal
++          OTG_CONFIG register bit on boards that connect the charger's OTG pin.
++        maxItems: 1
++
+   ti,boost-low-freq:
+     description: boost mode frequency will be 500kHz, otherwise 1.5MHz
+     type: boolean
+@@ -116,6 +135,7 @@ unevaluatedProperties: false
+ 
+ examples:
+   - |
++    #include <dt-bindings/gpio/gpio.h>
+     #include <dt-bindings/interrupt-controller/irq.h>
+     i2c {
+       #address-cells = <1>;
+@@ -136,8 +156,14 @@ examples:
+         ti,boost-voltage = <5000000>;
+         ti,boost-max-current = <1000000>;
+         input-current-limit-microamp = <2000000>;
++        ti,disable-auto-dpdm;
+ 
+         ti,use-ilim-pin;
+         ti,thermal-regulation-threshold = <120>;
++
++        usb_otg_vbus: usb-otg-vbus {
++          regulator-name = "usb-otg-vbus";
++          enable-gpios = <&gpio1 17 GPIO_ACTIVE_HIGH>;
++        };
+       };
+     };
+-- 
+2.55.0
+

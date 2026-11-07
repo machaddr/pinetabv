@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 18:10:00 +0100
+Subject: [PATCH 1/3] phy: starfive: fix JH7110 D-PHY lane 1 N resistor
+
+The resistance fields for data lanes 1 through 3 share SYSCFG(12),
+where the first field is L1N in bits 4:0.  Reusing the L0N mask from
+SYSCFG(8) overlaps the L3N field instead.  The combined register write
+therefore leaves L1N at zero and changes L3N from 0x10 to 0x18.
+
+Define the L1N field at its documented location and use it for the
+SYSCFG(12) write.  The PineTab-V panel uses all four D-PHY data lanes.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/phy/starfive/phy-jh7110-dphy-tx.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/phy/starfive/phy-jh7110-dphy-tx.c b/drivers/phy/starfive/phy-jh7110-dphy-tx.c
+index 9ce08c24e034..0ce39cb89f29 100644
+--- a/drivers/phy/starfive/phy-jh7110-dphy-tx.c
++++ b/drivers/phy/starfive/phy-jh7110-dphy-tx.c
+@@ -34,6 +34,7 @@
+ #define STF_DPHY_RG_CDTX_L0N_HSTX_RES			GENMASK(23, 19)
+ #define STF_DPHY_RG_CDTX_L0P_HSTX_RES			GENMASK(28, 24)
+ 
++#define STF_DPHY_RG_CDTX_L1N_HSTX_RES			GENMASK(4, 0)
+ #define STF_DPHY_RG_CDTX_L1P_HSTX_RES			GENMASK(9, 5)
+ #define STF_DPHY_RG_CDTX_L2N_HSTX_RES			GENMASK(14, 10)
+ #define STF_DPHY_RG_CDTX_L2P_HSTX_RES			GENMASK(19, 15)
+@@ -260,7 +261,7 @@ static int stf_dphy_configure(struct phy *phy, union phy_configure_opts *opts)
+ 	       FIELD_PREP(STF_DPHY_RG_CDTX_L0P_HSTX_RES, 0x10),
+ 	       dphy->topsys + STF_DPHY_APBIFSAIF_SYSCFG(8));
+ 
+-	writel(FIELD_PREP(STF_DPHY_RG_CDTX_L0N_HSTX_RES, 0x10) |
++	writel(FIELD_PREP(STF_DPHY_RG_CDTX_L1N_HSTX_RES, 0x10) |
+ 	       FIELD_PREP(STF_DPHY_RG_CDTX_L2N_HSTX_RES, 0x10) |
+ 	       FIELD_PREP(STF_DPHY_RG_CDTX_L3N_HSTX_RES, 0x10) |
+ 	       FIELD_PREP(STF_DPHY_RG_CDTX_L1P_HSTX_RES, 0x10) |
+-- 
+2.55.0

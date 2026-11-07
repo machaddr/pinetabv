@@ -1,0 +1,95 @@
+From 11866ada958385e61697b89662dd06e92d055203 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 23:20:00 +0100
+Subject: [PATCH] ASoC: dwc: clock JH7110 BCLK while releasing reset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The JH7110 reset controller waits for reset status to propagate through
+the clocked target domain.  At boot, the I2S slave BCLK mux can retain its
+external parent while the ES8316 has not started driving BCLK.  Enabling
+the internal BCLK generator alone is then insufficient and deasserting the
+BCLK reset times out with -ETIMEDOUT.
+
+Select the enabled internal BCLK as the functional mux parent before
+deasserting the resets.  U-Boot is not required to initialize the audio
+divider registers, so also program transient 12.288 MHz MCLK and 3.072 MHz
+BCLK rates before enabling the internal clock.  Switch back to the external
+codec clock afterward as before.  This removes both bootloader-state
+dependencies without changing the clock source used for audio data.
+
+The clk_bulk_data arrays contain clock pointers populated by clk_bulk_get.
+Make them automatic so simultaneous probes cannot overwrite shared mutable
+state.  Also report a reset timeout at its actual failing operation.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ sound/soc/dwc/dwc-i2s.c | 29 ++++++++++++++++++++++++++---
+ 1 file changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/dwc/dwc-i2s.c b/sound/soc/dwc/dwc-i2s.c
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -726,10 +726,13 @@ static int dw_configure_dai_by_dt(struct dw_i2s_dev *dev,
+ }
+ 
+ #ifdef CONFIG_OF
++#define JH7110_AUDIO_MCLK_RATE	12288000
++#define JH7110_AUDIO_BCLK_RATE	 3072000
++
+ /* clocks initialization with master mode on JH7110 SoC */
+ static int jh7110_i2s_crg_master_init(struct dw_i2s_dev *dev)
+ {
+-	static struct clk_bulk_data clks[] = {
++	struct clk_bulk_data clks[] = {
+ 		{ .id = "mclk" },
+ 		{ .id = "mclk_ext" },
+ 		{ .id = "mclk_inner" },
+@@ -799,7 +799,7 @@ exit:
+ /* clocks initialization with slave mode on JH7110 SoC */
+ static int jh7110_i2s_crg_slave_init(struct dw_i2s_dev *dev)
+ {
+-	static struct clk_bulk_data clks[] = {
++	struct clk_bulk_data clks[] = {
+ 		{ .id = "mclk" },
+ 		{ .id = "mclk_ext" },
+ 		{ .id = "apb" },
+@@ -846,13 +849,33 @@ static int jh7110_i2s_crg_slave_init(struct dw_i2s_dev *dev)
+ 	if (ret)
+ 		goto err_dis_pclk;
+ 
++	/*
++	 * U-Boot is not required to initialize the audio dividers.  Program
++	 * valid transient rates so the BCLK reset domain really receives clock
++	 * edges while reset status propagates.
++	 */
++	ret = clk_set_rate(mclk_inner, JH7110_AUDIO_MCLK_RATE);
++	if (ret)
++		goto err_dis_pclk;
++
++	/* The BCLK reset status cannot update while its selected clock is idle. */
++	ret = clk_set_parent(bclk, bclk_mst);
++	if (ret)
++		goto err_dis_pclk;
++
++	ret = clk_set_rate(bclk_mst, JH7110_AUDIO_BCLK_RATE);
++	if (ret)
++		goto err_dis_pclk;
++
+ 	ret = clk_prepare_enable(bclk_mst);
+ 	if (ret)
+ 		goto err_dis_pclk;
+ 
+ 	ret = reset_control_deassert(resets);
+-	if (ret)
++	if (ret) {
++		ret = dev_err_probe(dev->dev, ret, "failed to deassert i2s resets\n");
+ 		goto err_dis_all;
++	}
+ 
+ 	/* The sources of BCLK and LRCK are the external codec. */
+ 	ret = clk_set_parent(bclk, bclk_ext);
+-- 
+2.55.0

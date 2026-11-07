@@ -1,0 +1,75 @@
+From d5f2464262f29471f8ff74a7864de60eaa4cc823 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 24 Oct 2026 09:34:57 +0100
+Subject: [PATCH] drm: verisilicon: clear firmware tiling before linear scanout
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The PineTab-V bootloader writes 0x18220000 to FB_CONFIG, including tile
+mode 17 in bits 21:17. The DRM primary plane only advertises linear
+buffers, but its update callback only changes the format and swizzle.
+Shared reset deassertion at probe does not guarantee that firmware's
+configuration has been cleared. A Linux buffer can therefore be fetched
+using the old memory layout, affecting both fbcon and compositors.
+
+Explicitly disable tiling, rotation, scaling, clear mode, ROI and
+framebuffer decompression before programming each linear framebuffer.
+These are all capabilities which this primary plane does not expose to
+userspace. Preserve the enable, display-selection and shadow-commit bits;
+the surrounding atomic begin/flush transaction still controls when the
+new state becomes visible.
+
+This removes a concrete firmware handoff dependency. The moving streaks
+in the supplied console and GNOME videos still require validation on a
+physical PineTab-V, including the existing FIFO and DSI error reports.
+
+Link: https://github.com/starfive-tech/u-boot/blob/196f587b957a7a7b2900de53b1cafb6ae034de0d/drivers/video/starfive/sf_vop.c#L710
+Link: https://github.com/starfive-tech/linux/blob/8587185299e8b1625deda5471a0329903e4a73e5/drivers/gpu/drm/verisilicon/vs_dc_hw.c#L1630
+Assisted-by: Codex (OpenAI)
+---
+ drivers/gpu/drm/verisilicon/vs_primary_plane.c     | 14 ++++++++++++++
+ .../gpu/drm/verisilicon/vs_primary_plane_regs.h    |  2 ++
+ 2 files changed, 16 insertions(+)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_primary_plane.c b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+index 794b7b5..6c6b61d 100644
+--- a/drivers/gpu/drm/verisilicon/vs_primary_plane.c
++++ b/drivers/gpu/drm/verisilicon/vs_primary_plane.c
+@@ -122,6 +122,20 @@ static void vs_primary_plane_atomic_update(struct drm_plane *plane,
+ 	output = vcrtc->id;
+ 	dc = vcrtc->dc;
+ 
++	/*
++	 * Only linear, unrotated, unscaled framebuffers are advertised.  The
++	 * shared resets need not clear state left by firmware; in particular,
++	 * PineTab-V U-Boot programs a nonzero tile mode.  Do not interpret a
++	 * Linux framebuffer using that layout or a stale clear/ROI setting.
++	 */
++	regmap_clear_bits(dc->regs, VSDC_FB_CONFIG(output),
++			  VSDC_FB_CONFIG_CLEAR_EN |
++			  VSDC_FB_CONFIG_ROT_MASK |
++			  VSDC_FB_CONFIG_TILE_MODE_MASK |
++			  VSDC_FB_CONFIG_SCALE_EN);
++	regmap_clear_bits(dc->regs, VSDC_FB_CONFIG_EX(output),
++			  VSDC_FB_CONFIG_EX_ROI_EN | VSDC_FB_CONFIG_EX_DEC_EN);
++
+ 	regmap_update_bits(dc->regs, VSDC_FB_CONFIG(output),
+ 			   VSDC_FB_CONFIG_FMT_MASK,
+ 			   VSDC_FB_CONFIG_FMT(vs_state->format.color));
+diff --git a/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h b/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h
+index cbb125c..fe48892 100644
+--- a/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h
++++ b/drivers/gpu/drm/verisilicon/vs_primary_plane_regs.h
+@@ -34,6 +34,8 @@
+ /* Fill with value generated with VSDC_MAKE_PLANE_SIZE(w, h) */
+ 
+ #define VSDC_FB_CONFIG_EX(n)			(0x1CC0 + 0x4 * (n))
++#define VSDC_FB_CONFIG_EX_ROI_EN			BIT(0)
++#define VSDC_FB_CONFIG_EX_DEC_EN			BIT(1)
+ #define VSDC_FB_CONFIG_EX_COMMIT		BIT(12)
+ #define VSDC_FB_CONFIG_EX_FB_EN			BIT(13)
+ #define VSDC_FB_CONFIG_EX_ZPOS_MASK		GENMASK(18, 16)
+-- 
+2.56.0
+

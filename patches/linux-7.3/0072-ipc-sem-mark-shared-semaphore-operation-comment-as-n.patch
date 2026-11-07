@@ -1,0 +1,34 @@
+From cff566511baaa738492946a42f7df9384baaa95f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 16:54:16 +0100
+Subject: [PATCH 72/77] ipc/sem: mark shared semaphore operation comment as
+ non-kernel-doc
+
+The comment documents both perform_atomic_semop() and its slow variant,
+so it is not valid kernel-doc for the immediately following function.
+Mark it as a regular block comment to prevent the documentation parser
+from treating the bracketed name as an identifier.
+
+No functional change.
+
+Assisted-by: Codex:gpt-5
+---
+ ipc/sem.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ipc/sem.c b/ipc/sem.c
+index 6cdf862b1f5cc..89a003ac01660 100644
+--- a/ipc/sem.c
++++ b/ipc/sem.c
+@@ -626,7 +626,7 @@ SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
+ 	return ksys_semget(key, nsems, semflg);
+ }
+ 
+-/**
++/*
+  * perform_atomic_semop[_slow] - Attempt to perform semaphore
+  *                               operations on a given array.
+  * @sma: semaphore array
+-- 
+2.55.0
+

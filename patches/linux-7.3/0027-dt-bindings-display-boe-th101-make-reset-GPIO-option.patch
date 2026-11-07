@@ -1,0 +1,46 @@
+From 3866db09530b3e18d84c72fe8104d5d9b5b32ba7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:04:12 +0100
+Subject: [PATCH 27/53] dt-bindings: display: boe-th101: make reset GPIO
+ optional
+
+The BOE module can be integrated without a connected reset line, as on
+the first PineTab-V revision. Stop requiring reset-gpios for the BOE
+compatible; the Starry panel remains explicitly reset-less.
+
+Fixes: 3808a15e3248 ("dt-bindings: display: panel: Add compatible for starry-er88577")
+Assisted-by: Codex:gpt-5
+---
+ .../bindings/display/panel/boe,th101mb31ig002-28a.yaml    | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml b/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml
+index 6a82bd1ec763c..bf28164a115e9 100644
+--- a/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml
++++ b/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml
+@@ -12,9 +12,9 @@ maintainers:
+ properties:
+   compatible:
+     enum:
+-        # BOE TH101MB31IG002-28A 10.1" WXGA TFT LCD panel
++      # BOE TH101MB31IG002-28A 10.1" WXGA TFT LCD panel
+       - boe,th101mb31ig002-28a
+-        # The Starry-er88577 is a 10.1" WXGA TFT-LCD panel
++      # The Starry-er88577 is a 10.1" WXGA TFT-LCD panel
+       - starry,er88577
+ 
+   reg:
+@@ -43,10 +43,6 @@ allOf:
+     then:
+       properties:
+         reset-gpios: false
+-    else:
+-      required:
+-        - reset-gpios
+-
+ additionalProperties: false
+ 
+ examples:
+-- 
+2.55.0
+

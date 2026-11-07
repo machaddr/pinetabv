@@ -1,0 +1,100 @@
+From 220ff00d4d2d454e4f3d5682ff3a7e4f21a4e522 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:31:52 +0100
+Subject: [PATCH 03/53] dt-bindings: gpu: add StarFive JH7110 PowerVR core
+
+Describe the JH7110 BXE-4-32 core, including its six clocks, two resets,
+power domain, and non-coherent DMA requirement. Keep the existing clock
+and reset limits for every other compatible.
+
+Assisted-by: Codex:gpt-5
+---
+ .../bindings/gpu/img,powervr-rogue.yaml       | 43 ++++++++++++++++++-
+ 1 file changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/gpu/img,powervr-rogue.yaml b/Documentation/devicetree/bindings/gpu/img,powervr-rogue.yaml
+index a1f54dbae3f31..1080e5170e3ce 100644
+--- a/Documentation/devicetree/bindings/gpu/img,powervr-rogue.yaml
++++ b/Documentation/devicetree/bindings/gpu/img,powervr-rogue.yaml
+@@ -38,6 +38,10 @@ properties:
+               - thead,th1520-gpu
+           - const: img,img-bxm-4-64
+           - const: img,img-rogue
++      - items:
++          - const: starfive,jh7110-gpu
++          - const: img,img-bxe-4-32
++          - const: img,img-rogue
+       - items:
+           - enum:
+               - ti,am62p-gpu
+@@ -58,13 +62,16 @@ properties:
+ 
+   clocks:
+     minItems: 1
+-    maxItems: 3
++    maxItems: 6
+ 
+   clock-names:
+     items:
+       - const: core
+       - const: mem
+       - const: sys
++      - const: apb
++      - const: core_clk
++      - const: rtc
+     minItems: 1
+ 
+   interrupts:
+@@ -81,9 +88,10 @@ properties:
+     minItems: 1
+ 
+   dma-coherent: true
++  dma-noncoherent: true
+ 
+   resets:
+-    maxItems: 1
++    maxItems: 2
+ 
+ required:
+   - compatible
+@@ -123,6 +131,37 @@ allOf:
+         clock-names:
+           minItems: 3
+ 
++  - if:
++      properties:
++        compatible:
++          contains:
++            const: starfive,jh7110-gpu
++    then:
++      properties:
++        clocks:
++          minItems: 6
++          maxItems: 6
++        clock-names:
++          minItems: 6
++          maxItems: 6
++        resets:
++          minItems: 2
++          maxItems: 2
++        dma-coherent: false
++      required:
++        - power-domains
++        - resets
++        - dma-noncoherent
++    else:
++      properties:
++        clocks:
++          maxItems: 3
++        clock-names:
++          maxItems: 3
++        resets:
++          maxItems: 1
++        dma-noncoherent: false
++
+   - if:
+       properties:
+         compatible:
+-- 
+2.55.0
+

@@ -1,0 +1,41 @@
+From 2c3a03f1571580860561b760162c0b1e3fa73251 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Wed, 26 Aug 2026 01:10:00 +0100
+Subject: [PATCH] riscv: dts: starfive: expand PineTab-V backlight levels
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The vendor table exposes only eleven backlight settings.  This is visibly
+coarse in desktop brightness controls even though the OpenCores PWM has
+enough resolution for finer duty-cycle changes.
+
+Use the standard pwm-backlight interpolation property to expose 101 real
+duty-cycle levels.  Keep the inverted polarity and descending duty curve
+required by the board wiring, and translate the old default index so that
+its 40 percent duty cycle remains unchanged.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi       | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -59,8 +59,9 @@
+ 	backlight: backlight {
+ 		compatible = "pwm-backlight";
+ 		pwms = <&pwm0 0 50000 PWM_POLARITY_INVERTED>;
+-		brightness-levels = <10 9 8 7 6 5 4 3 2 1 0>;
+-		default-brightness-level = <6>;
++		brightness-levels = <100 0>;
++		num-interpolated-steps = <100>;
++		default-brightness-level = <60>;
+ 		power-supply = <&vcc5v>;
+ 	};
+ 
+-- 
+2.55.0

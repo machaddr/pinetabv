@@ -1,0 +1,48 @@
+From 464b413e678fdd8ece6a52001665e2b30782256d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 8 Aug 2026 16:57:00 +0100
+Subject: [PATCH 47/53] dt-bindings: power: supply: cw2015: describe low-SoC
+ alert
+
+CW2015 exposes an active-low, latched alert output and a programmable 0%
+to 31% state-of-charge threshold. Describe the optional interrupt and
+threshold so boards can use that hardware signal.
+
+Assisted-by: Codex:gpt-5
+---
+ .../bindings/power/supply/cw2015_battery.yaml        | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/power/supply/cw2015_battery.yaml b/Documentation/devicetree/bindings/power/supply/cw2015_battery.yaml
+index f7bde324153d8..301291c1251ac 100644
+--- a/Documentation/devicetree/bindings/power/supply/cw2015_battery.yaml
++++ b/Documentation/devicetree/bindings/power/supply/cw2015_battery.yaml
+@@ -24,6 +24,17 @@ properties:
+   reg:
+     maxItems: 1
+ 
++  interrupts:
++    maxItems: 1
++
++  cellwise,alert-low-soc-level:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 0
++    maximum: 31
++    description:
++      State-of-charge percentage at or below which the active-low alert
++      output is asserted.
++
+   cellwise,battery-profile:
+     description: |
+       This property specifies characteristics of the battery used. The format
+@@ -71,6 +82,7 @@ examples:
+                 0x2F 0x00 0x64 0xA5 0xB5 0x11 0xF0 0x11
+            >;
+            cellwise,monitor-interval-ms = <5000>;
++           cellwise,alert-low-soc-level = <3>;
+            monitored-battery = <&bat>;
+            power-supplies = <&mains_charger>, <&usb_charger>;
+        };
+-- 
+2.55.0
+

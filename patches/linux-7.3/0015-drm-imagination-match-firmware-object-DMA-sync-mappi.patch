@@ -1,0 +1,129 @@
+From 07eb4440d5f83eac5d32cb8e3df755c1429e2350 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:51:17 +0100
+Subject: [PATCH 15/53] drm/imagination: match firmware object DMA sync
+ mappings
+
+PowerVR GEM shmem scatterlists are DMA-mapped with DMA_BIDIRECTIONAL.
+The non-coherent firmware helpers instead synchronize those mappings with
+DMA_TO_DEVICE or DMA_FROM_DEVICE. This violates the DMA API requirement
+that synchronization use the mapping direction and is reported by DMA API
+debugging.
+
+Use DMA_BIDIRECTIONAL for both ownership transitions. Also split partial
+field synchronization at DMA scatterlist boundaries instead of assuming a
+field is contained in the segment holding its first byte. Leave the MIPS
+page-table synchronization alone because those pages are separately mapped
+with DMA_TO_DEVICE.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_fw.h | 60 ++++++++++++++++++++++++++++++------
+ 1 file changed, 50 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.h b/drivers/gpu/drm/imagination/pvr_fw.h
+index cc6639b2d2360d63361e7ba1440a151d809a1a37..6e8ac113d7bd49c2ca55a9767ff72ea5fc1d4dde 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.h
++++ b/drivers/gpu/drm/imagination/pvr_fw.h
+@@ -11,6 +11,7 @@
+ #include <drm/drm_gem_shmem_helper.h>
+ #include <drm/drm_mm.h>
+ 
++#include <linux/bug.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/types.h>
+ 
+@@ -479,15 +480,57 @@ pvr_fw_object_get_dma_addr(struct pvr_fw_object *fw_obj, u32 offset, dma_addr_t
+ 	return pvr_gem_get_dma_addr(fw_obj->gem, offset, dma_addr_out);
+ }
+ 
++static __always_inline void
++pvr_fw_object_sync_field(struct device *dev, struct pvr_fw_object *fw_obj,
++			 u32 offset, size_t size, bool for_device)
++{
++	struct drm_gem_shmem_object *shmem;
++	struct scatterlist *sg;
++	unsigned int index;
++
++	if (!fw_obj || !fw_obj->gem || !size)
++		return;
++
++	shmem = &fw_obj->gem->base;
++	if (WARN_ON_ONCE(!shmem->sgt ||
++			 offset >= pvr_gem_object_size(fw_obj->gem) ||
++			 size > pvr_gem_object_size(fw_obj->gem) - offset))
++		return;
++
++	for_each_sgtable_dma_sg(shmem->sgt, sg, index) {
++		dma_addr_t sync_addr;
++		size_t sync_size;
++
++		if (offset >= sg_dma_len(sg)) {
++			offset -= sg_dma_len(sg);
++			continue;
++		}
++
++		sync_size = min_t(size_t, size, sg_dma_len(sg) - offset);
++		sync_addr = sg_dma_address(sg) + offset;
++		if (for_device)
++			dma_sync_single_for_device(dev, sync_addr, sync_size,
++						   DMA_BIDIRECTIONAL);
++		else
++			dma_sync_single_for_cpu(dev, sync_addr, sync_size,
++						DMA_BIDIRECTIONAL);
++
++		size -= sync_size;
++		if (!size)
++			return;
++
++		offset = 0;
++	}
++
++	WARN_ON_ONCE(size);
++}
++
+ static __always_inline void
+ pvr_fw_object_sync_field_for_device(struct device *dev,
+ 				    struct pvr_fw_object *fw_obj,
+ 				    u32 offset, size_t size)
+ {
+-	dma_addr_t dma;
+-
+-	if (fw_obj && pvr_fw_object_get_dma_addr(fw_obj, offset, &dma) == 0)
+-		dma_sync_single_for_device(dev, dma, size, DMA_TO_DEVICE);
++	pvr_fw_object_sync_field(dev, fw_obj, offset, size, true);
+ }
+ 
+ static __always_inline void
+@@ -495,10 +538,7 @@ pvr_fw_object_sync_field_for_cpu(struct device *dev,
+ 				 struct pvr_fw_object *fw_obj,
+ 				 u32 offset, size_t size)
+ {
+-	dma_addr_t dma;
+-
+-	if (fw_obj && pvr_fw_object_get_dma_addr(fw_obj, offset, &dma) == 0)
+-		dma_sync_single_for_cpu(dev, dma, size, DMA_FROM_DEVICE);
++	pvr_fw_object_sync_field(dev, fw_obj, offset, size, false);
+ }
+ 
+ static __always_inline void
+@@ -511,7 +551,7 @@ pvr_fw_object_sync_all_for_device(struct device *dev,
+ 		return;
+ 	sh = &fw_obj->gem->base;
+ 	if (sh->sgt)
+-		dma_sync_sgtable_for_device(dev, sh->sgt, DMA_TO_DEVICE);
++		dma_sync_sgtable_for_device(dev, sh->sgt, DMA_BIDIRECTIONAL);
+ }
+ 
+ static __always_inline void
+@@ -524,7 +564,7 @@ pvr_fw_object_sync_all_for_cpu(struct device *dev,
+ 		return;
+ 	sh = &fw_obj->gem->base;
+ 	if (sh->sgt)
+-		dma_sync_sgtable_for_cpu(dev, sh->sgt, DMA_FROM_DEVICE);
++		dma_sync_sgtable_for_cpu(dev, sh->sgt, DMA_BIDIRECTIONAL);
+ }
+ 
+ void pvr_fw_object_get_fw_addr_offset(struct pvr_fw_object *fw_obj, u32 offset, u32 *fw_addr_out);
+-- 
+2.53.0

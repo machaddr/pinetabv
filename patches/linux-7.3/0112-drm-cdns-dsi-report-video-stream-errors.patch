@@ -1,0 +1,77 @@
+From 567c55cc628694876f57d4fae44ea04877153688 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Thu, 27 Aug 2026 22:15:00 +0100
+Subject: [PATCH] drm: cdns-dsi: report video stream errors
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Cadence DSI video status interrupts are permanently masked, so physical
+UART logs cannot distinguish a DC8200 scanout fault from missing DPI data,
+sync or packet sizing at the DSI host.
+
+Clear stale video errors and arm their status interrupt after the DPI
+input and DSI video path are running.  On the first error, mask the source
+before logging and clearing it.  A later modeset rearms reporting.  This
+records the hardware status needed for diagnosis without allowing a
+persistent error to create an interrupt storm.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-core.c
+@@ -349,6 +349,11 @@
+ #define ERR_MISSING_HSYNC		BIT(2)
+ #define ERR_MISSING_DATA		BIT(1)
+ #define VSG_RUNNING			BIT(0)
++#define VID_MODE_ERROR_MASK		(VSG_RECOVERY | ERR_VRS_WRONG_LEN | \
++					 ERR_LONG_READ | ERR_LINE_WRITE | \
++					 ERR_BURST_WRITE | ERR_SMALL_HEIGHT | \
++					 ERR_SMALL_LEN | ERR_MISSING_VSYNC | \
++					 ERR_MISSING_HSYNC | ERR_MISSING_DATA)
+ 
+ #define VID_VCA_SETTING1		0xf4
+ #define BURST_LP			BIT(16)
+@@ -631,6 +636,7 @@ static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
+ 		return;
+ 
+ 	input->enabled = false;
++	writel(0, dsi->regs + VID_MODE_STS_CTL);
+ 
+ 	/*
+ 	 * The cdns-dsi controller needs to be disabled after it's DPI source
+@@ -987,6 +993,9 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
+ 	tmp = readl(dsi->regs + MCTL_MAIN_EN) | IF_EN(input->id);
+ 	writel(tmp, dsi->regs + MCTL_MAIN_EN);
+ 
++	writel(VID_MODE_ERROR_MASK, dsi->regs + VID_MODE_STS_CLR);
++	writel(VID_MODE_ERROR_MASK, dsi->regs + VID_MODE_STS_CTL);
++
+ 	input->enabled = true;
+ 	return;
+ 
+@@ -1219,6 +1228,17 @@ static irqreturn_t cdns_dsi_interrupt(int irq, void *data)
+ 		ret = IRQ_HANDLED;
+ 	}
+ 
++	flag = readl(dsi->regs + VID_MODE_STS_FLAG) & VID_MODE_ERROR_MASK;
++	if (flag) {
++		/* Avoid an IRQ storm; a modeset rearms video-error reporting. */
++		writel(0, dsi->regs + VID_MODE_STS_CTL);
++		writel(flag, dsi->regs + VID_MODE_STS_CLR);
++		dev_warn(dsi->base.dev,
++			 "video stream error 0x%08x (status 0x%08x)\n",
++			 flag, readl(dsi->regs + VID_MODE_STS));
++		ret = IRQ_HANDLED;
++	}
++
+ 	return ret;
+ }
+ 
+-- 
+2.55.0

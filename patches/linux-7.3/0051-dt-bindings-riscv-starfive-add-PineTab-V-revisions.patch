@@ -1,0 +1,34 @@
+From 2b94cb8b15894dbbd239d8f49dd455e3ce39a73d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:31:17 +0100
+Subject: [PATCH 51/53] dt-bindings: riscv: starfive: add PineTab-V revisions
+
+Add compatibles for the common Pine64 PineTab-V design and its dated
+2023-06-14 and 2024-07-30 hardware revisions.
+
+Assisted-by: Codex:gpt-5
+---
+ Documentation/devicetree/bindings/riscv/starfive.yaml | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/riscv/starfive.yaml b/Documentation/devicetree/bindings/riscv/starfive.yaml
+index 8ba0e10b529ac..612a805d30fdd 100644
+--- a/Documentation/devicetree/bindings/riscv/starfive.yaml
++++ b/Documentation/devicetree/bindings/riscv/starfive.yaml
+@@ -36,6 +36,13 @@ properties:
+               - xunlong,orangepi-rv
+           - const: starfive,jh7110
+ 
++      - items:
++          - enum:
++              - pine64,pinetab-v-20230614
++              - pine64,pinetab-v-20240730
++          - const: pine64,pinetab-v
++          - const: starfive,jh7110
++
+       - items:
+           - enum:
+               - starfive,visionfive-2-lite
+-- 
+2.55.0
+

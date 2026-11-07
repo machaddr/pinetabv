@@ -1,0 +1,121 @@
+From c060a8d716f57069ca81b802cb18559f64081898 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:13 +0100
+Subject: [PATCH 5/8] dt-bindings: display: describe JH7110 VOUT routing
+
+The JH7110 DC8200 needs the LCD mux clock and a bit in the video-output
+system controller in addition to the clocks described by the generic DC
+binding.
+
+Describe both resources and add the video-output block to the existing
+JH7110 syscon binding.
+
+Assisted-by: Codex:gpt-5
+---
+ .../bindings/display/bridge/cdns,dsi.yaml       |  8 ++++++++
+ .../bindings/display/verisilicon,dc.yaml        | 17 +++++++++++++++++
+ .../soc/starfive/starfive,jh7110-syscon.yaml    |  1 +
+ 3 files changed, 26 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml b/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml
+index dfba18b764ef9..306e470d8d7d2 100644
+--- a/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml
++++ b/Documentation/devicetree/bindings/display/bridge/cdns,dsi.yaml
+@@ -73,6 +73,12 @@ properties:
+   power-domains:
+     maxItems: 1
+ 
++  starfive,vout-syscon:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description:
++      Phandle to the JH7110 video-output system controller used to route the
++      display-controller DPI output to this DSI transmitter.
++
+   ports:
+     $ref: /schemas/graph.yaml#/properties/ports
+ 
+@@ -135,6 +141,7 @@ allOf:
+         - power-domains
+         - resets
+         - reset-names
++        - starfive,vout-syscon
+     else:
+       properties:
+         clocks:
+@@ -145,6 +152,7 @@ allOf:
+           maxItems: 1
+         reset-names:
+           maxItems: 1
++        starfive,vout-syscon: false
+ 
+ required:
+   - compatible
+diff --git a/Documentation/devicetree/bindings/display/verisilicon,dc.yaml b/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+index 9b5585f217549..28148449582a2 100644
+--- a/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
++++ b/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+@@ -27,20 +27,24 @@ properties:
+     maxItems: 1
+ 
+   clocks:
++    minItems: 5
+     items:
+       - description: DC Core clock
+       - description: DMA AXI bus clock
+       - description: Configuration AHB bus clock
+       - description: Pixel clock of output 0
+       - description: Pixel clock of output 1
++      - description: JH7110 LCD output mux clock
+ 
+   clock-names:
++    minItems: 5
+     items:
+       - const: core
+       - const: axi
+       - const: ahb
+       - const: pix0
+       - const: pix1
++      - const: lcd
+ 
+   resets:
+     items:
+@@ -90,11 +94,24 @@ allOf:
+           contains:
+             const: starfive,jh7110-dc8200
+     then:
++      properties:
++        clocks:
++          minItems: 6
++          maxItems: 6
++        clock-names:
++          minItems: 6
++          maxItems: 6
+       required:
+         - resets
+         - reset-names
+         - power-domains
+         - dma-noncoherent
++    else:
++      properties:
++        clocks:
++          maxItems: 5
++        clock-names:
++          maxItems: 5
+ 
+ additionalProperties: false
+ 
+diff --git a/Documentation/devicetree/bindings/soc/starfive/starfive,jh7110-syscon.yaml b/Documentation/devicetree/bindings/soc/starfive/starfive,jh7110-syscon.yaml
+index 0039319e91fe6..cf9b657d0e8a3 100644
+--- a/Documentation/devicetree/bindings/soc/starfive/starfive,jh7110-syscon.yaml
++++ b/Documentation/devicetree/bindings/soc/starfive/starfive,jh7110-syscon.yaml
+@@ -24,6 +24,7 @@ properties:
+           - enum:
+               - starfive,jh7110-aon-syscon
+               - starfive,jh7110-stg-syscon
++              - starfive,jh7110-vout-syscon
+           - const: syscon
+ 
+   reg:
+-- 
+2.55.0
+

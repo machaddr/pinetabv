@@ -1,0 +1,104 @@
+From: Codex <noreply@openai.com>
+Subject: [PATCH] drm: starfive: reset the byte clock and retry complete panel wake-up
+
+The JH7110 wrapper leaves TXBYTEHS out of the reset-deassert group because
+that domain must stay in reset until the external PHY is ready.  However,
+acquiring an exclusive reset does not assert it.  On the first resume a
+bootloader can therefore leave the byte-clock domain running while Linux
+reconfigures the D-PHY.  Explicitly assert TXBYTEHS before wrapper clocks
+are enabled and propagate assertion errors.
+
+The PineTab-V panel's first low-power no-op was also outside the retry
+loop.  A transient failure at that point bypassed all three initialization
+attempts.  Include panel power-up and the LP-11 command in each attempt,
+with the existing bounded power-cycle sequence between attempts.
+
+Finally reject the panel enable callback after prepare failure.  The void
+bridge callback cannot report prepare errors to the atomic commit, and
+without an enable guard the panel core can illuminate an uninitialized
+panel.  Successful prepares keep the existing backlight behavior.
+
+These changes address concrete handoff/error-path defects.  They do not
+establish physical cold-boot reliability without testing on the tablet.
+
+Link: https://docs.kernel.org/driver-api/reset.html
+Assisted-by: OpenAI Codex
+---
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -87,6 +87,11 @@
+ static int cdns_dsi_jh7110_resume(struct cdns_dsi *dsi)
+ {
+ 	int ret;
++
++	/* Firmware may have left the byte-clock domain running. */
++	ret = reset_control_assert(dsi->resets[dsi->num_rsts - 1].rstc);
++	if (ret)
++		return ret;
+ 
+ 	ret = clk_bulk_prepare_enable(dsi->num_clks, dsi->clocks);
+ 	if (ret)
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -337,14 +337,14 @@
+ 			msleep(ctx->desc->lp11_to_reset_delay_ms);
+ 	}
+ 
+-	ret = boe_th101mb31ig002_enable_panel_power(ctx);
+-	if (ret)
+-		goto power_down;
+-
+ 	for (attempt = 0; attempt <= ctx->desc->init_retries; attempt++) {
+-		boe_th101mb31ig002_reset(ctx);
+-
+-		ret = ctx->desc->init(ctx);
++		/* The first LP-11 command can fail too; retry the whole wake-up. */
++		ret = boe_th101mb31ig002_enable_panel_power(ctx);
++		if (!ret) {
++			boe_th101mb31ig002_reset(ctx);
++
++			ret = ctx->desc->init(ctx);
++		}
+ 		if (!ret)
+ 			return 0;
+ 
+@@ -360,13 +360,6 @@
+ 				gpiod_set_value_cansleep(ctx->reset, 1);
+ 			gpiod_set_value_cansleep(ctx->enable, 0);
+ 			msleep(ctx->desc->initial_power_off_delay_ms);
+-
+-			ret = boe_th101mb31ig002_enable_panel_power(ctx);
+-			if (ret) {
+-				dev_warn(dev,
+-					 "panel power-cycle failed: %d\n", ret);
+-				break;
+-			}
+ 		} else {
+ 			msleep(20);
+ 		}
+@@ -377,6 +370,15 @@
+ power_down:
+ 	boe_th101mb31ig002_power_down(ctx);
+ 	return ret;
++}
++
++static int boe_th101mb31ig002_enable_backlight(struct drm_panel *panel)
++{
++	/* A void bridge pre-enable cannot propagate prepare failures. */
++	if (!panel->prepared)
++		return -EIO;
++
++	return 0;
+ }
+ 
+ static const struct drm_display_mode boe_th101mb31ig002_default_mode = {
+@@ -502,6 +504,7 @@
+ 
+ static const struct drm_panel_funcs boe_th101mb31ig002_funcs = {
+ 	.prepare = boe_th101mb31ig002_prepare,
++	.enable = boe_th101mb31ig002_enable_backlight,
+ 	.unprepare = boe_th101mb31ig002_unprepare,
+ 	.disable = boe_th101mb31ig002_disable,
+ 	.get_modes = boe_th101mb31ig002_get_modes,

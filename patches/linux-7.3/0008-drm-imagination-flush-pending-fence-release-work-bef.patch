@@ -1,0 +1,31 @@
+From 2df50e915750331fb39b28c49796e3be15285869 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Fri, 1 May 2026 15:52:57 -0400
+Subject: [PATCH 08/53] drm/imagination: flush pending fence release work
+ before module teardown
+
+Flush deferred fence-release work before destroying the driver workqueue.
+This prevents queued cleanup from referencing module state after teardown.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_drv.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_drv.c b/drivers/gpu/drm/imagination/pvr_drv.c
+index 5c965ef0274ff017d880dfec548fbc91d10f9d06..1ecb195d0c20db8ec7a73040489e8937b0e8707a 100644
+--- a/drivers/gpu/drm/imagination/pvr_drv.c
++++ b/drivers/gpu/drm/imagination/pvr_drv.c
+@@ -1476,6 +1476,10 @@ static void pvr_remove(struct platform_device *plat_dev)
+ 	xa_destroy(&pvr_dev->free_list_ids);
+ 
+ 	pm_runtime_suspend(drm_dev->dev);
++
++	if (pvr_dev->sched_wq)
++		flush_workqueue(pvr_dev->sched_wq);
++
+ 	pvr_device_fini(pvr_dev);
+ 	drm_dev_unplug(drm_dev);
+ 	pvr_watchdog_fini(pvr_dev);
+-- 
+2.53.0

@@ -1,0 +1,69 @@
+From 3297c1e76ac720f2eca91a40e206598ea02a9517 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:05:48 +0100
+Subject: [PATCH 35/53] riscv: dts: starfive: restore JH7110 CAMSS node
+
+Restore the disabled JH7110 CAMSS ISP node with its clocks, resets,
+power domain, correctly ordered interrupts, and DVP/CSI graph input ports.
+Boards can opt in after completing their sensor pipeline.
+
+Assisted-by: Codex:gpt-5
+---
+ arch/riscv/boot/dts/starfive/jh7110.dtsi | 41 ++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index 75850fc71d523..ab50e48352809 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1282,6 +1282,47 @@ csi_phy: phy@19820000 {
+ 			#phy-cells = <0>;
+ 		};
+ 
++		camss: isp@19840000 {
++			compatible = "starfive,jh7110-camss";
++			reg = <0x0 0x19840000 0x0 0x10000>,
++			      <0x0 0x19870000 0x0 0x30000>;
++			reg-names = "syscon", "isp";
++			clocks = <&ispcrg JH7110_ISPCLK_DOM4_APB_FUNC>,
++				 <&ispcrg JH7110_ISPCLK_ISPV2_TOP_WRAPPER_C>,
++				 <&ispcrg JH7110_ISPCLK_DVP_INV>,
++				 <&ispcrg JH7110_ISPCLK_VIN_P_AXI_WR>,
++				 <&ispcrg JH7110_ISPCLK_MIPI_RX0_PXL>,
++				 <&syscrg JH7110_SYSCLK_ISP_TOP_CORE>,
++				 <&syscrg JH7110_SYSCLK_ISP_TOP_AXI>;
++			clock-names = "apb_func", "wrapper_clk_c", "dvp_inv",
++				      "axiwr", "mipi_rx0_pxl", "ispcore_2x",
++				      "isp_axi";
++			resets = <&ispcrg JH7110_ISPRST_ISPV2_TOP_WRAPPER_P>,
++				 <&ispcrg JH7110_ISPRST_ISPV2_TOP_WRAPPER_C>,
++				 <&ispcrg JH7110_ISPRST_VIN_P_AXI_RD>,
++				 <&ispcrg JH7110_ISPRST_VIN_P_AXI_WR>,
++				 <&syscrg JH7110_SYSRST_ISP_TOP>,
++				 <&syscrg JH7110_SYSRST_ISP_TOP_AXI>;
++			reset-names = "wrapper_p", "wrapper_c", "axird",
++				      "axiwr", "isp_top_n", "isp_top_axi";
++			power-domains = <&pwrc JH7110_PD_ISP>;
++			interrupts = <92>, <87>, <90>, <88>;
++			status = "disabled";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				camss_dvp_in: port@0 {
++					reg = <0>;
++				};
++
++				camss_csi_in: port@1 {
++					reg = <1>;
++				};
++			};
++		};
++
+ 		dc8200: display@29400000 {
+ 			compatible = "starfive,jh7110-dc8200", "verisilicon,dc";
+ 			reg = <0x0 0x29400000 0x0 0x2800>;
+-- 
+2.55.0
+

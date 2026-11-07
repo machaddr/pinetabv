@@ -1,0 +1,60 @@
+From ff1129c46a8b667c091f85d3b3d255278e609da4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:12 +0100
+Subject: [PATCH 2/8] dt-bindings: display: panel: add PineTab-V panel
+
+The PineTab-V panel uses the BOE-compatible command set but has
+board-specific timings. Its reset GPIO is also absent on the first
+hardware revision. The vendor tree identifies it as
+boe,th101mb31ig002-28a-pinetab-v.
+
+Add that specific compatible so the driver can select the PineTab-V
+data while keeping the generic BOE description unchanged.
+
+Assisted-by: Codex:gpt-5
+---
+ .../display/panel/boe,th101mb31ig002-28a.yaml | 21 ++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml b/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml
+index bf28164a115e9..d76667cf70dc0 100644
+--- a/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml
++++ b/Documentation/devicetree/bindings/display/panel/boe,th101mb31ig002-28a.yaml
+@@ -11,11 +11,15 @@ maintainers:
+ 
+ properties:
+   compatible:
+-    enum:
+-      # BOE TH101MB31IG002-28A 10.1" WXGA TFT LCD panel
+-      - boe,th101mb31ig002-28a
+-      # The Starry-er88577 is a 10.1" WXGA TFT-LCD panel
+-      - starry,er88577
++    oneOf:
++      - enum:
++          # BOE TH101MB31IG002-28A 10.1" WXGA TFT LCD panel
++          - boe,th101mb31ig002-28a
++          # The Starry-er88577 is a 10.1" WXGA TFT-LCD panel
++          - starry,er88577
++      - items:
++          - const: boe,th101mb31ig002-28a-pinetab-v
++          - const: boe,th101mb31ig002-28a
+ 
+   reg:
+     maxItems: 1
+@@ -43,6 +47,13 @@ allOf:
+     then:
+       properties:
+         reset-gpios: false
++  - if:
++      properties:
++        compatible:
++          const: boe,th101mb31ig002-28a
++    then:
++      required:
++        - reset-gpios
+ additionalProperties: false
+ 
+ examples:
+-- 
+2.55.0
+

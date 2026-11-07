@@ -1,0 +1,31 @@
+From 7a4f6904875c61d20127b6b90170be5c61ddaab2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 8 Aug 2026 16:55:56 +0100
+Subject: [PATCH 49/53] dt-bindings: PCI: starfive: describe endpoint supply
+
+The JH7110 host driver already obtains and controls a vpcie3v3 regulator,
+and existing board descriptions provide it. Document the supply so those
+descriptions satisfy the controller schema.
+
+Assisted-by: Codex:gpt-5
+---
+ .../devicetree/bindings/pci/starfive,jh7110-pcie.yaml          | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/pci/starfive,jh7110-pcie.yaml b/Documentation/devicetree/bindings/pci/starfive,jh7110-pcie.yaml
+index 33c80626e8ec9..fd829dc422c6a 100644
+--- a/Documentation/devicetree/bindings/pci/starfive,jh7110-pcie.yaml
++++ b/Documentation/devicetree/bindings/pci/starfive,jh7110-pcie.yaml
+@@ -68,6 +68,9 @@ properties:
+       Specified PHY is attached to PCIe controller.
+     maxItems: 1
+ 
++  vpcie3v3-supply:
++    description: 3.3 V supply for the PCIe endpoint.
++
+ required:
+   - clocks
+   - resets
+-- 
+2.55.0
+

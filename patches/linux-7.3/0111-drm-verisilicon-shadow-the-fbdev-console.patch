@@ -1,0 +1,39 @@
+From 91db84767a35f45d0d128a128f7407964fc75b1b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Thu, 27 Aug 2026 22:10:00 +0100
+Subject: [PATCH] drm: verisilicon: shadow the fbdev console
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+After switching the scanout allocation back to consistent DMA, fbcon
+writes directly to a write-combined buffer.  PineTab-V rotates fbcon by
+90 degrees, so drawing one glyph performs many small, strided writes.
+This makes boot text appear dragged and can make the console unusably slow.
+
+Give framebuffers the standard atomic dirty callback.  drm_fbdev_dma then
+selects its generic cached vmalloc shadow and copies damaged rectangles to
+the consistent DMA scanout object.  Normal DRM clients such as Mutter keep
+using the same consistent GEM DMA buffers; the callback does not recreate
+the unsafe non-coherent allocation removed previously.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ drivers/gpu/drm/verisilicon/vs_drm.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/verisilicon/vs_drm.c b/drivers/gpu/drm/verisilicon/vs_drm.c
+--- a/drivers/gpu/drm/verisilicon/vs_drm.c
++++ b/drivers/gpu/drm/verisilicon/vs_drm.c
+@@ -63,7 +63,7 @@ static const struct drm_driver vs_drm_driver = {
+ };
+ 
+ static const struct drm_mode_config_funcs vs_mode_config_funcs = {
+-	.fb_create		= drm_gem_fb_create,
++	.fb_create		= drm_gem_fb_create_with_dirty,
+ 	.atomic_check		= drm_atomic_helper_check,
+ 	.atomic_commit		= drm_atomic_helper_commit,
+ };
+-- 
+2.55.0

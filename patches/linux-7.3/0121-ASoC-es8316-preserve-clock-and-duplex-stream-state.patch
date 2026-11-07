@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <noreply@openai.com>
+Date: Sat, 24 Oct 2026 13:30:00 +0100
+Subject: [PATCH] ASoC: es8316: preserve clock and duplex stream state
+
+The half-MCLK bit is only ever set by hw_params. Reopening a stream at a
+rate requiring the full MCLK leaves it enabled, so the actual codec clock
+no longer matches the calculated LRCK and BCLK dividers. Always program
+the bit for the newly selected clock.
+
+Playback and capture share BCLK, but have separate serial word-length
+registers. Starting capture currently changes the running playback word
+length and vice versa. Configure only the requested direction, derive
+BCLK from the physical sample width and require symmetric physical
+sample widths so duplex streams cannot change BCLK.
+This also permits 24-bit samples in 32-bit containers alongside 32-bit
+samples without changing the opposite direction's significant-bit count.
+
+Validate the format before changing any registers.
+
+Link: https://github.com/torvalds/linux/blob/master/sound/soc/codecs/es8316.c
+Assisted-by: OpenAI Codex
+---
+diff --git a/sound/soc/codecs/es8316.c b/sound/soc/codecs/es8316.c
+index 24ec8b211..9f855204e 100644
+--- a/sound/soc/codecs/es8316.c
++++ b/sound/soc/codecs/es8316.c
+@@ -514,40 +514,41 @@ static int es8316_pcm_hw_params(struct snd_pcm_substream *substream,
+ 		}
+ 	} while (!clk_valid);
+ 
+-	if (clk != es8316->sysclk) {
+-		snd_soc_component_update_bits(component, ES8316_CLKMGR_CLKSW,
+-					      ES8316_CLKMGR_CLKSW_MCLK_DIV,
+-					      ES8316_CLKMGR_CLKSW_MCLK_DIV);
+-	}
+-
+ 	lrck_divider = clk / params_rate(params);
+-	bclk_divider = lrck_divider / 4;
+ 	switch (params_format(params)) {
+ 	case SNDRV_PCM_FORMAT_S16_LE:
+ 		wordlen = ES8316_SERDATA2_LEN_16;
+-		bclk_divider /= 16;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S20_3LE:
+ 		wordlen = ES8316_SERDATA2_LEN_20;
+-		bclk_divider /= 20;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S24_LE:
+ 	case SNDRV_PCM_FORMAT_S24_3LE:
+ 		wordlen = ES8316_SERDATA2_LEN_24;
+-		bclk_divider /= 24;
+ 		break;
+ 	case SNDRV_PCM_FORMAT_S32_LE:
+ 		wordlen = ES8316_SERDATA2_LEN_32;
+-		bclk_divider /= 32;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+ 
+-	snd_soc_component_update_bits(component, ES8316_SERDATA_DAC,
+-			    ES8316_SERDATA2_LEN_MASK, wordlen);
+-	snd_soc_component_update_bits(component, ES8316_SERDATA_ADC,
+-			    ES8316_SERDATA2_LEN_MASK, wordlen);
++	/* Both directions share BCLK and must use the same physical slot width. */
++	bclk_divider = lrck_divider / 4 / params_physical_width(params);
++
++	/* A previous stream may have used the divided MCLK. */
++	snd_soc_component_update_bits(component, ES8316_CLKMGR_CLKSW,
++				      ES8316_CLKMGR_CLKSW_MCLK_DIV,
++				      clk != es8316->sysclk ?
++				      ES8316_CLKMGR_CLKSW_MCLK_DIV : 0);
++
++	/* The opposite direction may already be running. */
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		snd_soc_component_update_bits(component, ES8316_SERDATA_DAC,
++					      ES8316_SERDATA2_LEN_MASK, wordlen);
++	else
++		snd_soc_component_update_bits(component, ES8316_SERDATA_ADC,
++					      ES8316_SERDATA2_LEN_MASK, wordlen);
+ 	snd_soc_component_update_bits(component, ES8316_SERDATA1, 0x1f, bclk_divider);
+ 	snd_soc_component_update_bits(component, ES8316_CLKMGR_ADCDIV1, 0x0f, lrck_divider >> 8);
+ 	snd_soc_component_update_bits(component, ES8316_CLKMGR_ADCDIV2, 0xff, lrck_divider & 0xff);
+@@ -593,6 +594,7 @@ static struct snd_soc_dai_driver es8316_dai = {
+ 	},
+ 	.ops = &es8316_ops,
+ 	.symmetric_rate = 1,
++	.symmetric_sample_bits = 1,
+ };
+ 
+ static void es8316_enable_micbias_for_mic_gnd_short_detect(
+-- 
+2.55.0

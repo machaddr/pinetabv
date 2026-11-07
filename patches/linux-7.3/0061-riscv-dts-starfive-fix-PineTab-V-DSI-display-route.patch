@@ -1,0 +1,92 @@
+From 7649bdc8fd0891fc757c2390280151f39c8507c0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:13 +0100
+Subject: [PATCH 8/8] riscv: dts: starfive: fix PineTab-V DSI display route
+
+Describe the JH7110 VOUT syscon and LCD mux clock, then select the DC
+divider as the source for the second DC output and DSI DPI clocks.
+
+Connect PineTab-V DSI to DC output 1. This matches the vendor Linux
+path, whose DSI encoder selects CRTC mask BIT(1) and whose DC enable
+sequence routes display ID 1 through dc8200_pix1 and the top LCD mux.
+Finally select the board-specific panel timing compatible.
+
+Assisted-by: Codex:gpt-5
+---
+ .../boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi   |  9 +++++++--
+ arch/riscv/boot/dts/starfive/jh7110.dtsi             | 12 ++++++++++--
+ 2 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+index 6cc0e416e73eb..60921fdf2b6ca 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -363,10 +363,12 @@ csi2rx_out: endpoint {
+ };
+ 
+ &dc8200 {
++	assigned-clocks = <&voutcrg JH7110_VOUTCLK_DC8200_PIX1>;
++	assigned-clock-parents = <&voutcrg JH7110_VOUTCLK_DC8200_PIX>;
+ 	status = "okay";
+ };
+ 
+-&dc_out0 {
++&dc_out1 {
+ 	dc_to_dsi: endpoint {
+ 		remote-endpoint = <&dsi_from_dc>;
+ 	};
+@@ -780,10 +782,13 @@ &mipi_dphy {
+ };
+ 
+ &mipi_dsi {
++	assigned-clocks = <&voutcrg JH7110_VOUTCLK_DSITX_DPI>;
++	assigned-clock-parents = <&voutcrg JH7110_VOUTCLK_DC8200_PIX>;
+ 	status = "okay";
+ 
+ 	panel: panel@0 {
+-		compatible = "boe,th101mb31ig002-28a";
++		compatible = "boe,th101mb31ig002-28a-pinetab-v",
++			     "boe,th101mb31ig002-28a";
+ 		reg = <0>;
+ 		backlight = <&backlight>;
+ 		enable-gpios = <&sysgpio 37 GPIO_ACTIVE_HIGH>;
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index ab50e48352809..1fbfdc4dd114f 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1333,8 +1333,10 @@ dc8200: display@29400000 {
+ 				 <&voutcrg JH7110_VOUTCLK_DC8200_AXI>,
+ 				 <&voutcrg JH7110_VOUTCLK_DC8200_AHB>,
+ 				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX0>,
+-				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX1>;
+-			clock-names = "core", "axi", "ahb", "pix0", "pix1";
++				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX1>,
++				 <&voutcrg JH7110_VOUTCLK_DOM_VOUT_TOP_LCD>;
++			clock-names = "core", "axi", "ahb", "pix0", "pix1",
++				      "lcd";
+ 			resets = <&voutcrg JH7110_VOUTRST_DC8200_CORE>,
+ 				 <&voutcrg JH7110_VOUTRST_DC8200_AXI>,
+ 				 <&voutcrg JH7110_VOUTRST_DC8200_AHB>;
+@@ -1356,6 +1358,11 @@ dc_out1: port@1 {
+ 			};
+ 		};
+ 
++		vout_syscon: syscon@295b0000 {
++			compatible = "starfive,jh7110-vout-syscon", "syscon";
++			reg = <0x0 0x295b0000 0x0 0x90>;
++		};
++
+ 		voutcrg: clock-controller@295c0000 {
+ 			compatible = "starfive,jh7110-voutcrg";
+ 			reg = <0x0 0x295c0000 0x0 0x10000>;
+@@ -1376,6 +1383,7 @@ voutcrg: clock-controller@295c0000 {
+ 
+ 		mipi_dsi: dsi@295d0000 {
+ 			compatible = "starfive,jh7110-dsi";
++			starfive,vout-syscon = <&vout_syscon>;
+ 			reg = <0x0 0x295d0000 0x0 0x10000>;
+ 			interrupts = <98>;
+ 			clocks = <&voutcrg JH7110_VOUTCLK_DSITX_APB>,
+-- 
+2.55.0
+

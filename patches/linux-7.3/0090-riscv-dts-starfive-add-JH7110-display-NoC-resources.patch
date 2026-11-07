@@ -1,0 +1,48 @@
+From df4d5fa59408a628efab343748435002e9c30d75 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 22:17:00 +0100
+Subject: [PATCH] riscv: dts: starfive: add JH7110 display NoC resources
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Describe the JH7110 display NoC AXI clock and reset as DC8200
+resources.  The display controller must hold this independent syscrg
+gate while scanning out; otherwise late unused-clock cleanup disables
+the memory path after firmware hands the display to Linux.
+
+This matches the resources owned by the DC8200 in StarFive's PineTab-V
+kernel.
+
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/arch/riscv/boot/dts/starfive/jh7110.dtsi
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ arch/riscv/boot/dts/starfive/jh7110.dtsi | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1333,13 +1333,15 @@ dc8200: display@29400000 {
+ 				 <&voutcrg JH7110_VOUTCLK_DC8200_AHB>,
+ 				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX0>,
+ 				 <&voutcrg JH7110_VOUTCLK_DC8200_PIX1>,
+-				 <&voutcrg JH7110_VOUTCLK_DOM_VOUT_TOP_LCD>;
++				 <&voutcrg JH7110_VOUTCLK_DOM_VOUT_TOP_LCD>,
++				 <&syscrg JH7110_SYSCLK_NOC_BUS_DISP_AXI>;
+ 			clock-names = "core", "axi", "ahb", "pix0", "pix1",
+-				      "lcd";
++				      "lcd", "noc";
+ 			resets = <&voutcrg JH7110_VOUTRST_DC8200_CORE>,
+ 				 <&voutcrg JH7110_VOUTRST_DC8200_AXI>,
+-				 <&voutcrg JH7110_VOUTRST_DC8200_AHB>;
+-			reset-names = "core", "axi", "ahb";
++				 <&voutcrg JH7110_VOUTRST_DC8200_AHB>,
++				 <&syscrg JH7110_SYSRST_NOC_BUS_DISP_AXI>;
++			reset-names = "core", "axi", "ahb", "noc";
+ 			power-domains = <&pwrc JH7110_PD_VOUT>;
+ 			status = "disabled";
+ 
+-- 
+2.55.0

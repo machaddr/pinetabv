@@ -1,0 +1,44 @@
+From 2efab73bbaaa71997c9a16a47c1d1d163c40e0d4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:12 +0100
+Subject: [PATCH 1/8] drm/bridge: cdns-dsi: use 10 MHz D-PHY steps on JH7110
+
+The StarFive JH7110 D-PHY driver programs a configuration table with
+10 MHz entries. Rounding the requested high-speed clock to 100 MHz
+needlessly overclocks the link and stretches the calculated horizontal
+front porch.
+
+Round to the actual table granularity. PineTab-V's 66 MHz RGB888 mode
+requires 396 MHz per lane, so this selects the 400 MHz entry instead of
+unnecessarily jumping to 500 MHz.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index b3b5baa8b1b33..fad4cf1f95ac4 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -12,7 +12,7 @@
+ 
+ #include "cdns-dsi-jh7110.h"
+ 
+-#define JH7110_DPHY_RATE_STEP	100000000UL
++#define JH7110_DPHY_RATE_STEP	10000000UL
+ 
+ static const char * const dsi_resets[] = {
+ 	"sys",
+@@ -121,7 +121,7 @@ static int cdns_dsi_jh7110_mode_fixup(struct cdns_dsi *dsi,
+ 	if (!vm->pixelclock)
+ 		return -EINVAL;
+ 
+-	/* The JH7110 D-PHY can only synthesize 100 MHz lane-rate steps. */
++	/* The JH7110 D-PHY configuration table uses 10 MHz rate steps. */
+ 	lane_rate = roundup(phy_cfg->hs_clk_rate, JH7110_DPHY_RATE_STEP);
+ 	phy_cfg->hs_clk_rate = lane_rate;
+ 
+-- 
+2.55.0
+

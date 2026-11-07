@@ -1,0 +1,117 @@
+From 21548f904b98803e9b47b0b0ebb8b193e0791fe4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:34:11 +0100
+Subject: [PATCH 43/53] power: supply: bq25890: complete current configuration
+
+Use separate precharge and termination tables so the SC89890H 30 mA
+termination offset is represented correctly. Parse and program an
+optional initial input-current limit after reset.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/power/supply/bq25890_charger.c | 33 +++++++++++++++++++++++---
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/power/supply/bq25890_charger.c b/drivers/power/supply/bq25890_charger.c
+index 4d2fc990560b8..e3c32fd6b3d64 100644
+--- a/drivers/power/supply/bq25890_charger.c
++++ b/drivers/power/supply/bq25890_charger.c
+@@ -87,6 +87,7 @@ struct bq25890_init_data {
+ 	u8 vreg;	/* regulation voltage		*/
+ 	u8 iterm;	/* termination current		*/
+ 	u8 iprechg;	/* precharge current		*/
++	u8 iinlim;	/* input current limit		*/
+ 	u8 sysvmin;	/* minimum system voltage limit */
+ 	u8 boostv;	/* boost regulation voltage	*/
+ 	u8 boosti;	/* boost current limit		*/
+@@ -128,6 +129,7 @@ struct bq25890_device {
+ 
+ 	bool skip_reset;
+ 	bool read_back_init_data;
++	bool iinlim_set;
+ 	bool force_hiz;
+ 	u32 pump_express_vbus_max;
+ 	u32 iinlim_percentage;
+@@ -281,6 +283,7 @@ enum bq25890_table_ids {
+ 	/* range tables */
+ 	TBL_ICHG,
+ 	TBL_ITERM,
++	TBL_IPRECHG,
+ 	TBL_IINLIM,
+ 	TBL_VREG,
+ 	TBL_BOOSTV,
+@@ -358,6 +361,7 @@ static const union bq25890_table bq25890_tables[] = {
+ 	/* TODO: BQ25896 has max ICHG 3008 mA */
+ 	[TBL_ICHG] =	 { .rt = {0,        5056000, 64000} },	 /* uA */
+ 	[TBL_ITERM] =	 { .rt = {64000,    1024000, 64000} },	 /* uA */
++	[TBL_IPRECHG] = { .rt = {64000,    1024000, 64000} },	 /* uA */
+ 	[TBL_IINLIM] =   { .rt = {100000,   3250000, 50000} },	 /* uA */
+ 	[TBL_VREG] =	 { .rt = {3840000,  4608000, 16000} },	 /* uV */
+ 	[TBL_BOOSTV] =	 { .rt = {4550000,  5510000, 64000} },	 /* uV */
+@@ -379,7 +383,8 @@ static const union bq25890_table bq25890_tables[] = {
+  */
+ static const union bq25890_table sc89890h_tables[] = {
+ 	[TBL_ICHG] =	 { .rt = {0,        5040000, 60000} },
+-	[TBL_ITERM] =	 { .rt = {60000,     960000, 60000} },
++	[TBL_ITERM] =	 { .rt = {30000,     930000, 60000} },
++	[TBL_IPRECHG] = { .rt = {60000,     960000, 60000} },
+ 	[TBL_IINLIM] =  { .rt = {100000,   3250000, 50000} },
+ 	[TBL_VREG] =	 { .rt = {3840000,  4848000, 16000} },
+ 	[TBL_BOOSTV] =	 { .rt = {3900000,  5400000, 100000} },
+@@ -603,7 +608,7 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
+ 
+ 	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
+ 		val->intval = bq25890_find_val(bq, bq->init_data.iprechg,
+-					       TBL_ITERM);
++					       TBL_IPRECHG);
+ 		break;
+ 
+ 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
+@@ -1026,6 +1031,15 @@ static int bq25890_hw_init(struct bq25890_device *bq)
+ 	if (ret)
+ 		return ret;
+ 
++	if (bq->iinlim_set) {
++		ret = bq25890_field_write(bq, F_IINLIM, bq->init_data.iinlim);
++		if (ret < 0) {
++			dev_dbg(bq->dev, "Setting input current limit failed %d\n",
++				ret);
++			return ret;
++		}
++	}
++
+ 	ret = bq25890_get_chip_state(bq, &bq->state);
+ 	if (ret < 0) {
+ 		dev_dbg(bq->dev, "Get state failed %d\n", ret);
+@@ -1414,7 +1428,7 @@ static int bq25890_fw_read_u32_props(struct bq25890_device *bq)
+ 		{"ti,charge-current", false, TBL_ICHG, &init->ichg},
+ 		{"ti,battery-regulation-voltage", false, TBL_VREG, &init->vreg},
+ 		{"ti,termination-current", false, TBL_ITERM, &init->iterm},
+-		{"ti,precharge-current", false, TBL_ITERM, &init->iprechg},
++		{"ti,precharge-current", false, TBL_IPRECHG, &init->iprechg},
+ 		{"ti,minimum-sys-voltage", false, TBL_SYSVMIN, &init->sysvmin},
+ 		{"ti,boost-voltage", false, TBL_BOOSTV, &init->boostv},
+ 		{"ti,boost-max-current", false, TBL_BOOSTI, &init->boosti},
+@@ -1479,6 +1493,19 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
+ 	}
+ 
+ 	bq->skip_reset = device_property_read_bool(bq->dev, "linux,skip-reset");
++
++	if (device_property_present(bq->dev,
++				    "input-current-limit-microamp")) {
++		ret = device_property_read_u32(bq->dev,
++					       "input-current-limit-microamp",
++					       &val);
++		if (ret)
++			return ret;
++
++		init->iinlim = bq25890_find_idx(bq, val, TBL_IINLIM);
++		bq->iinlim_set = true;
++	}
++
+ 	bq->read_back_init_data = device_property_read_bool(bq->dev,
+ 						"linux,read-back-settings");
+ 	if (bq->read_back_init_data)
+-- 
+2.55.0
+

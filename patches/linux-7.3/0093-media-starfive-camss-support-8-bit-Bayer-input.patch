@@ -1,0 +1,84 @@
+From fbb4d312f8f757c764705b3bd62bcfdff4e55e5c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 23:12:00 +0100
+Subject: [PATCH] media: starfive: camss: support 8-bit Bayer input
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The PineTab-V rear OV5640 offers four 8-bit Bayer media-bus formats, but
+the restored JH7110 CAMSS driver advertises only 10-bit Bayer at its raw
+capture and ISP sink pads.  Consequently there is no common raw format
+with which userspace can validate and enable the OV5640 pipeline.
+
+Advertise all four 8-bit Bayer orders at both CAMSS endpoints.  The ISP
+hardware setup already handles these codes alongside their 10-bit
+counterparts, and raw capture can store them without the 16-bit padding
+used for 10-bit samples.
+
+The mutually exclusive front and rear sensor links remain selectable by
+userspace through the media controller; this does not impose a board
+policy in the generic video-mux driver.
+
+Link: https://github.com/starfive-tech/linux/blob/pinetabv-6.6.y-devel/drivers/media/platform/starfive/v4l2_driver/stf_isp.c
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../staging/media/starfive/camss/stf-capture.c | 28 +++++++++++++++++++
+ .../staging/media/starfive/camss/stf-isp.c     |  4 +++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/drivers/staging/media/starfive/camss/stf-capture.c b/drivers/staging/media/starfive/camss/stf-capture.c
+--- a/drivers/staging/media/starfive/camss/stf-capture.c
++++ b/drivers/staging/media/starfive/camss/stf-capture.c
+@@ -43,6 +43,34 @@ static const struct stfcamss_format_info stf_wr_fmts[] = {
+ 		.vsub = { 1 },
+ 		.bpp = 16,
+ 	},
++	{
++		.code = MEDIA_BUS_FMT_SRGGB8_1X8,
++		.pixelformat = V4L2_PIX_FMT_SRGGB8,
++		.planes = 1,
++		.vsub = { 1 },
++		.bpp = 8,
++	},
++	{
++		.code = MEDIA_BUS_FMT_SGRBG8_1X8,
++		.pixelformat = V4L2_PIX_FMT_SGRBG8,
++		.planes = 1,
++		.vsub = { 1 },
++		.bpp = 8,
++	},
++	{
++		.code = MEDIA_BUS_FMT_SGBRG8_1X8,
++		.pixelformat = V4L2_PIX_FMT_SGBRG8,
++		.planes = 1,
++		.vsub = { 1 },
++		.bpp = 8,
++	},
++	{
++		.code = MEDIA_BUS_FMT_SBGGR8_1X8,
++		.pixelformat = V4L2_PIX_FMT_SBGGR8,
++		.planes = 1,
++		.vsub = { 1 },
++		.bpp = 8,
++	},
+ };
+ 
+ static const struct stfcamss_format_info stf_isp_fmts[] = {
+diff --git a/drivers/staging/media/starfive/camss/stf-isp.c b/drivers/staging/media/starfive/camss/stf-isp.c
+--- a/drivers/staging/media/starfive/camss/stf-isp.c
++++ b/drivers/staging/media/starfive/camss/stf-isp.c
+@@ -19,6 +19,10 @@ static const struct stf_isp_format isp_formats_sink[] = {
+ 	{ MEDIA_BUS_FMT_SGRBG10_1X10, 10 },
+ 	{ MEDIA_BUS_FMT_SGBRG10_1X10, 10 },
+ 	{ MEDIA_BUS_FMT_SBGGR10_1X10, 10 },
++	{ MEDIA_BUS_FMT_SRGGB8_1X8, 8 },
++	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8 },
++	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8 },
++	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8 },
+ };
+ 
+ static const struct stf_isp_format isp_formats_source[] = {
+-- 
+2.55.0

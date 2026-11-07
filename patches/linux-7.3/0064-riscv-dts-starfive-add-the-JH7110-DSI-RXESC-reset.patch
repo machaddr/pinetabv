@@ -1,0 +1,37 @@
+From 202597887d7570ad18cce9addaf967b9d4f1a322 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 15:53:35 +0100
+Subject: [PATCH 3/3] riscv: dts: starfive: add the JH7110 DSI RXESC reset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Describe the receive escape reset required by the JH7110 Cadence DSI
+wrapper. This matches the resets used by the vendor PineTab-V display
+implementation.
+
+Assisted-by: Codex:gpt-5
+---
+ arch/riscv/boot/dts/starfive/jh7110.dtsi | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index 1fbfdc4dd114f..6b487ea0eb90b 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1394,9 +1394,11 @@ mipi_dsi: dsi@295d0000 {
+ 			resets = <&voutcrg JH7110_VOUTRST_DSITX_APB>,
+ 				 <&voutcrg JH7110_VOUTRST_DSITX_SYS>,
+ 				 <&voutcrg JH7110_VOUTRST_DSITX_DPI>,
++				 <&voutcrg JH7110_VOUTRST_DSITX_RXESC>,
+ 				 <&voutcrg JH7110_VOUTRST_DSITX_TXESC>,
+ 				 <&voutcrg JH7110_VOUTRST_DSITX_TXBYTEHS>;
+-			reset-names = "dsi_p_rst", "sys", "dpi", "txesc", "txbytehs";
++			reset-names = "dsi_p_rst", "sys", "dpi", "rxesc", "txesc",
++				      "txbytehs";
+ 			phys = <&mipi_dphy>;
+ 			phy-names = "dphy";
+ 			power-domains = <&pwrc JH7110_PD_VOUT>;
+-- 
+2.55.0
+

@@ -1,0 +1,40 @@
+From 02ade02c15adf79cd2f2032c0666d89301aa4af1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 12:16:00 +0100
+Subject: [PATCH] riscv: dts: starfive: constrain PineTab-V CMA below 4 GiB
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The factory VisionFive2-derived U-Boot dynamically resizes the CMA node
+after loading a board DTB.  It also attempts to add an alloc-ranges
+property that keeps CMA in the low-memory window.  The unpadded PineTab-V
+DTB has no room to grow, so that operation fails with FDT_ERR_NOSPACE on
+the 8 GiB tablet and Linux places its 1.5 GiB CMA area above 4 GiB.
+
+DC8200 uses a 32-bit DMA mask and cannot address that high CMA area.
+Describe U-Boot's low-memory allocation range in the source DT.  U-Boot
+can then resize both existing four-cell properties in place for the
+detected memory capacity, while a direct kernel boot also keeps CMA in a
+DC8200-addressable range.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ .../boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi     | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+index 0b2ae08d6..74d0fa70f 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -49,6 +49,7 @@
+ 			compatible = "shared-dma-pool";
+ 			reusable;
+ 			size = <0x0 0x20000000>;
++			alloc-ranges = <0x0 0x70000000 0x0 0x60000000>;
+ 			alignment = <0x0 0x00400000>;
+ 			linux,cma-default;
+ 		};
+-- 
+2.55.0

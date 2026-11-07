@@ -1,0 +1,136 @@
+From a2af98196cb80df06c9787960bbad5a891a8da0c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 16:39:56 +0100
+Subject: [PATCH 34/53] media: docs: restore StarFive JH7110 CAMSS guide
+
+Restore the CAMSS media graph and driver guide from Linux v6.18.41.
+Mark the documentation as an experimental downstream restoration.
+
+Assisted-by: Codex:gpt-5
+---
+ .../admin-guide/media/starfive_camss.rst      | 79 +++++++++++++++++++
+ .../media/starfive_camss_graph.dot            | 13 +++
+ .../admin-guide/media/v4l-drivers.rst         |  1 +
+ 3 files changed, 93 insertions(+)
+ create mode 100644 Documentation/admin-guide/media/starfive_camss.rst
+ create mode 100644 Documentation/admin-guide/media/starfive_camss_graph.dot
+
+diff --git a/Documentation/admin-guide/media/starfive_camss.rst b/Documentation/admin-guide/media/starfive_camss.rst
+new file mode 100644
+index 0000000000000..284dd4b8d0747
+--- /dev/null
++++ b/Documentation/admin-guide/media/starfive_camss.rst
+@@ -0,0 +1,79 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++.. include:: <isonum.txt>
++
++================================
++Starfive Camera Subsystem driver
++================================
++
++.. warning::
++
++   This is an experimental downstream restoration of the staging driver from
++   Linux v6.18.41.  Upstream removed the driver in commit
++   70eaeee95f7b4813737b9e529b4b33b3e9928336 because it was no longer being
++   developed for promotion out of staging.
++
++Introduction
++------------
++
++This file documents the driver for the Starfive Camera Subsystem found on
++Starfive JH7110 SoC. The driver is located under drivers/staging/media/starfive/
++camss.
++
++The driver implements V4L2, Media controller and v4l2_subdev interfaces. Camera
++sensor using V4L2 subdev interface in the kernel is supported.
++
++The driver has been successfully used on the Gstreamer 1.18.5 with v4l2src
++plugin.
++
++
++Starfive Camera Subsystem hardware
++----------------------------------
++
++The Starfive Camera Subsystem hardware consists of::
++
++                    |\         +---------------+      +-----------+
++  +----------+      |  \       |               |      |           |
++  |          |      |   |      |               |      |           |
++  |   MIPI   |----->|   |----->|      ISP      |----->|           |
++  |          |      |   |      |               |      |           |
++  +----------+      |   |      |               |      |  Memory   |
++                    |MUX|      +---------------+      | Interface |
++  +----------+      |   |                             |           |
++  |          |      |   |---------------------------->|           |
++  | Parallel |----->|   |                             |           |
++  |          |      |   |                             |           |
++  +----------+      |  /                              |           |
++                    |/                                +-----------+
++
++- MIPI: The MIPI interface, receiving data from a MIPI CSI-2 camera sensor.
++
++- Parallel: The parallel interface,  receiving data from a parallel sensor.
++
++- ISP: The ISP, processing raw Bayer data from an image sensor and producing
++  YUV frames.
++
++
++Topology
++--------
++
++The media controller pipeline graph is as follows:
++
++.. _starfive_camss_graph:
++
++.. kernel-figure:: starfive_camss_graph.dot
++    :alt:   starfive_camss_graph.dot
++    :align: center
++
++The driver has 2 video devices:
++
++- capture_raw: The capture device, capturing image data directly from a sensor.
++- capture_yuv: The capture device, capturing YUV frame data processed by the
++  ISP module
++
++The driver has 3 subdevices:
++
++- stf_isp: is responsible for all the isp operations, outputs YUV frames.
++- cdns_csi2rx: a CSI-2 bridge supporting up to 4 CSI lanes in input, and 4
++  different pixel streams in output.
++- imx219: an image sensor, image data is sent through MIPI CSI-2.
+diff --git a/Documentation/admin-guide/media/starfive_camss_graph.dot b/Documentation/admin-guide/media/starfive_camss_graph.dot
+new file mode 100644
+index 0000000000000..d4c8d9fc50c9e
+--- /dev/null
++++ b/Documentation/admin-guide/media/starfive_camss_graph.dot
+@@ -0,0 +1,13 @@
++# SPDX-License-Identifier: GPL-2.0-only
++digraph board {
++	rankdir=TB
++	n00000001 [label="{{<port0> 0} | stf_isp\n/dev/v4l-subdev0 | {<port1> 1}}", shape=Mrecord, style=filled, fillcolor=green]
++	n00000001:port1 -> n00000008 [style=dashed]
++	n00000004 [label="capture_raw\n/dev/video0", shape=box, style=filled, fillcolor=yellow]
++	n00000008 [label="capture_yuv\n/dev/video1", shape=box, style=filled, fillcolor=yellow]
++	n0000000e [label="{{<port0> 0} | cdns_csi2rx.19800000.csi-bridge\n | {<port1> 1 | <port2> 2 | <port3> 3 | <port4> 4}}", shape=Mrecord, style=filled, fillcolor=green]
++	n0000000e:port1 -> n00000001:port0 [style=dashed]
++	n0000000e:port1 -> n00000004 [style=dashed]
++	n00000018 [label="{{} | imx219 6-0010\n/dev/v4l-subdev1 | {<port0> 0}}", shape=Mrecord, style=filled, fillcolor=green]
++	n00000018:port0 -> n0000000e:port0 [style=bold]
++}
+diff --git a/Documentation/admin-guide/media/v4l-drivers.rst b/Documentation/admin-guide/media/v4l-drivers.rst
+index d31da8e0a54f2..393f83e8dc4dd 100644
+--- a/Documentation/admin-guide/media/v4l-drivers.rst
++++ b/Documentation/admin-guide/media/v4l-drivers.rst
+@@ -33,6 +33,7 @@ Video4Linux (V4L) driver-specific documentation
+ 	si470x
+ 	si4713
+ 	si476x
++	starfive_camss
+ 	vimc
+ 	visl
+ 	vivid
+-- 
+2.55.0
+

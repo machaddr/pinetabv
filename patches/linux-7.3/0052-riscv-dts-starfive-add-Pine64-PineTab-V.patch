@@ -1,0 +1,1422 @@
+From 71994dae19a446f8fcad3bfea2d0f72f24bf1794 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:28:48 +0100
+Subject: [PATCH 52/53] riscv: dts: starfive: add Pine64 PineTab-V
+
+Add the common PineTab-V hardware description and dated revision DTs.
+Describe regulators, storage, PCIe/NVMe, USB, radios, keys, RTC, touch,
+panel, PWM backlight, charger, battery, cameras, GPU, audio, and the
+revision-specific wiring.
+
+The electrical mapping follows both released PINE64 schematics and
+retains the StarFive vendor source copyright and dual license. Features
+without a current upstream implementation remain disabled or explicitly
+experimental.
+
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver1-20230614.pdf
+Link: https://files.pine64.org/doc/PineTab/PineTab-V_Schematic_Ver2-20240730.pdf
+Link: https://github.com/starfive-tech/linux/tree/pinetab-v1.3.0
+Assisted-by: Codex:gpt-5
+---
+ arch/riscv/boot/dts/starfive/Makefile         |    2 +
+ .../jh7110-pine64-pinetab-v-20230614.dts      |   30 +
+ .../jh7110-pine64-pinetab-v-20240730.dts      |   40 +
+ .../dts/starfive/jh7110-pine64-pinetab-v.dtsi | 1289 +++++++++++++++++
+ 4 files changed, 1361 insertions(+)
+ create mode 100644 arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts
+ create mode 100644 arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts
+ create mode 100644 arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+
+diff --git a/arch/riscv/boot/dts/starfive/Makefile b/arch/riscv/boot/dts/starfive/Makefile
+index 3dd1f05283f74..5526529f737f2 100644
+--- a/arch/riscv/boot/dts/starfive/Makefile
++++ b/arch/riscv/boot/dts/starfive/Makefile
+@@ -13,6 +13,8 @@ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-milkv-mars.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-milkv-marscm-emmc.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-milkv-marscm-lite.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-orangepi-rv.dtb
++dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-pine64-pinetab-v-20230614.dtb
++dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-pine64-pinetab-v-20240730.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-pine64-star64.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-starfive-visionfive-2-lite.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7110-starfive-visionfive-2-lite-emmc.dtb
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts
+new file mode 100644
+index 0000000000000..43ea5cf037385
+--- /dev/null
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20230614.dts
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++/*
++ * Copyright (C) 2022 StarFive Technology Co., Ltd.
++ * Copyright (C) 2022 Hal Feng <hal.feng@starfivetech.com>
++ */
++
++/dts-v1/;
++
++#include "jh7110-pine64-pinetab-v.dtsi"
++
++/ {
++	model = "Pine64 PineTab-V (2023-06-14)";
++	compatible = "pine64,pinetab-v-20230614", "pine64,pinetab-v",
++		     "starfive,jh7110";
++};
++
++&charger {
++	/* This revision cannot identify the attached charger type safely. */
++	input-current-limit-microamp = <2000000>;
++	ti,disable-auto-dpdm;
++};
++
++&gpio_keys {
++	volume-down-key {
++		label = "Volume down";
++		linux,code = <KEY_VOLUMEDOWN>;
++		gpios = <&sysgpio 51 GPIO_ACTIVE_LOW>;
++		debounce-interval = <10>;
++	};
++};
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts
+new file mode 100644
+index 0000000000000..c3599c893f553
+--- /dev/null
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v-20240730.dts
+@@ -0,0 +1,40 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++/*
++ * Copyright (C) 2022 StarFive Technology Co., Ltd.
++ * Copyright (C) 2022 Hal Feng <hal.feng@starfivetech.com>
++ */
++
++/dts-v1/;
++
++#include "jh7110-pine64-pinetab-v.dtsi"
++
++/ {
++	model = "Pine64 PineTab-V (2024-07-30)";
++	compatible = "pine64,pinetab-v-20240730", "pine64,pinetab-v",
++		     "starfive,jh7110";
++};
++
++&gpio_keys {
++	volume-down-key {
++		label = "Volume down";
++		linux,code = <KEY_VOLUMEDOWN>;
++		gpios = <&aongpio 0 GPIO_ACTIVE_HIGH>;
++		debounce-interval = <10>;
++	};
++};
++
++&i2c0 {
++	accelerometer@18 {
++		compatible = "silan,sc7a20";
++		reg = <0x18>;
++		vdd-supply = <&gpio_vdd>;
++		vddio-supply = <&gpio_vdd>;
++		mount-matrix = "0", "0", "-1",
++			       "1", "0", "0",
++			       "0", "-1", "0";
++	};
++};
++
++&panel {
++	reset-gpios = <&sysgpio 51 GPIO_ACTIVE_LOW>;
++};
+diff --git a/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+new file mode 100644
+index 0000000000000..6cc0e416e73eb
+--- /dev/null
++++ b/arch/riscv/boot/dts/starfive/jh7110-pine64-pinetab-v.dtsi
+@@ -0,0 +1,1289 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++/*
++ * Pine64 PineTab-V common hardware description.  Revision-specific GPIO
++ * differences are kept in the dated .dts files.
++ *
++ * Copyright (C) 2022 StarFive Technology Co., Ltd.
++ * Copyright (C) 2022 Hal Feng <hal.feng@starfivetech.com>
++ */
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/pinctrl/starfive,jh7110-pinctrl.h>
++#include <dt-bindings/pwm/pwm.h>
++
++#include "jh7110.dtsi"
++#include "jh7110-pinfunc.h"
++
++/ {
++	model = "Pine64 PineTab-V";
++	compatible = "pine64,pinetab-v", "starfive,jh7110";
++
++	aliases {
++		i2c0 = &i2c0;
++		i2c2 = &i2c2;
++		i2c5 = &i2c5;
++		i2c6 = &i2c6;
++		mmc0 = &mmc0;
++		mmc1 = &mmc1;
++		rtc0 = &rtc;
++		serial0 = &uart0;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0x0 0x40000000 0x1 0x0>;
++	};
++
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		linux,cma {
++			compatible = "shared-dma-pool";
++			reusable;
++			size = <0x0 0x20000000>;
++			alignment = <0x0 0x00400000>;
++			linux,cma-default;
++		};
++	};
++
++	backlight: backlight {
++		compatible = "pwm-backlight";
++		pwms = <&pwm0 0 50000 PWM_POLARITY_INVERTED>;
++		brightness-levels = <10 9 8 7 6 5 4 3 2 1 0>;
++		default-brightness-level = <6>;
++		power-supply = <&vcc5v>;
++	};
++
++	bat: battery {
++		compatible = "simple-battery";
++		charge-full-design-microamp-hours = <6000000>;
++		voltage-max-design-microvolt = <4350000>;
++		voltage-min-design-microvolt = <3000000>;
++	};
++
++	camera_avdd: regulator-camera-avdd {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc2v8_dvp";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		regulator-always-on;
++		vin-supply = <&vcc_3v3>;
++	};
++
++	camera_dvdd: regulator-camera-dvdd {
++		compatible = "regulator-fixed";
++		regulator-name = "vdd1v5_dvp";
++		regulator-min-microvolt = <1500000>;
++		regulator-max-microvolt = <1500000>;
++		regulator-always-on;
++		vin-supply = <&vcc_3v3>;
++	};
++
++	clk_ext_camera: clock-camera {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <24000000>;
++	};
++
++	camera_selector: mux-controller {
++		compatible = "gpio-mux";
++		#mux-control-cells = <0>;
++		mux-gpios = <&sysgpio 53 GPIO_ACTIVE_HIGH>;
++		idle-state = <0>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&camera_selector_pins>;
++	};
++
++	camera_mux: video-mux {
++		compatible = "video-mux";
++		mux-controls = <&camera_selector>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		/* GPIO53 low selects the front-facing GC02M2. */
++		port@0 {
++			reg = <0>;
++
++			camera_mux_from_gc02m2: endpoint {
++				remote-endpoint = <&gc02m2_out>;
++			};
++		};
++
++		/* GPIO53 high selects the rear-facing OV5640. */
++		port@1 {
++			reg = <1>;
++
++			camera_mux_from_ov5640: endpoint {
++				remote-endpoint = <&ov5640_out>;
++			};
++		};
++
++		port@2 {
++			reg = <2>;
++
++			/* The active input determines the runtime CSI-2 lane map. */
++			camera_mux_out: endpoint {
++				remote-endpoint = <&csi2rx_in>;
++			};
++		};
++	};
++
++	gpio_keys: gpio-keys {
++		compatible = "gpio-keys";
++		autorepeat;
++
++		hall-switch {
++			label = "Hall switch";
++			linux,input-type = <EV_SW>;
++			linux,code = <SW_TABLET_MODE>;
++			gpios = <&sysgpio 40 GPIO_ACTIVE_LOW>;
++			debounce-interval = <10>;
++		};
++
++		power-key {
++			label = "Power key";
++			linux,code = <KEY_POWER>;
++			gpios = <&sysgpio 59 GPIO_ACTIVE_HIGH>;
++			debounce-interval = <10>;
++			wakeup-source;
++		};
++
++		volume-up-key {
++			label = "Volume up";
++			linux,code = <KEY_VOLUMEUP>;
++			gpios = <&sysgpio 49 GPIO_ACTIVE_LOW>;
++			debounce-interval = <10>;
++		};
++	};
++
++	gpio-restart {
++		compatible = "gpio-restart";
++		gpios = <&sysgpio 35 GPIO_ACTIVE_HIGH>;
++		priority = <160>;
++	};
++
++	rtc_i2c: i2c {
++		compatible = "i2c-gpio";
++		sda-gpios = <&sysgpio 24
++			     (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		scl-gpios = <&sysgpio 23
++			     (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		i2c-gpio,delay-us = <5>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		rtc: rtc@51 {
++			compatible = "haoyu,hym8563";
++			reg = <0x51>;
++			#clock-cells = <0>;
++			clock-output-names = "hym8563-clkout";
++
++			/* RTC_DET reaches board power logic, not a Linux IRQ. */
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led-camera-flash {
++			color = <LED_COLOR_ID_WHITE>;
++			function = LED_FUNCTION_FLASH;
++			gpios = <&sysgpio 55 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++	};
++
++	rfkill-bluetooth {
++		compatible = "rfkill-gpio";
++		label = "PineTab-V Bluetooth";
++		radio-type = "bluetooth";
++		shutdown-gpios = <&sysgpio 54 GPIO_ACTIVE_HIGH>;
++	};
++
++	rfkill-wlan {
++		compatible = "rfkill-gpio";
++		label = "PineTab-V WLAN";
++		radio-type = "wlan";
++		shutdown-gpios = <&sysgpio 42 GPIO_ACTIVE_HIGH>;
++	};
++
++	speaker_amp: audio-amplifier {
++		compatible = "simple-audio-amplifier";
++		enable-gpios = <&sysgpio 50 GPIO_ACTIVE_HIGH>;
++		sound-name-prefix = "Speaker Amplifier";
++	};
++
++	sound {
++		compatible = "simple-audio-card";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&i2s_clk_pins &i2s_mclk_ext_pins>;
++		simple-audio-card,name = "PineTab-V";
++		simple-audio-card,aux-devs = <&speaker_amp>;
++		simple-audio-card,hp-det-gpios = <&sysgpio 36 GPIO_ACTIVE_HIGH>;
++		simple-audio-card,widgets =
++			"Microphone", "Internal Microphone",
++			"Microphone", "Headset Microphone",
++			"Headphone", "Headphones",
++			"Speaker", "Internal Speakers";
++		simple-audio-card,routing =
++			"MIC1", "Headset Microphone",
++			"MIC2", "Internal Microphone",
++			"Headphones", "HPOL",
++			"Headphones", "HPOR",
++			"Speaker Amplifier INL", "HPOL",
++			"Speaker Amplifier INR", "HPOR",
++			"Internal Speakers", "Speaker Amplifier OUTL",
++			"Internal Speakers", "Speaker Amplifier OUTR";
++
++		simple-audio-card,dai-link@0 {
++			reg = <0>;
++			format = "i2s";
++			bitclock-master = <&es8316_playback>;
++			frame-master = <&es8316_playback>;
++			mclk-fs = <256>;
++
++			cpu {
++				sound-dai = <&i2stx1>;
++			};
++
++			es8316_playback: codec {
++				sound-dai = <&es8316>;
++			};
++		};
++
++		simple-audio-card,dai-link@1 {
++			reg = <1>;
++			format = "i2s";
++			bitclock-master = <&es8316_capture>;
++			frame-master = <&es8316_capture>;
++			mclk-fs = <256>;
++
++			cpu {
++				sound-dai = <&i2srx>;
++			};
++
++			es8316_capture: codec {
++				sound-dai = <&es8316>;
++			};
++		};
++	};
++
++	vcc5v: regulator-5v0 {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc_5v";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		gpio = <&sysgpio 39 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-always-on;
++		regulator-boot-on;
++	};
++
++	vcc3v3_pcie: regulator-pcie-3v3 {
++		compatible = "regulator-fixed";
++		regulator-name = "vcc3v3_pcie";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&sysgpio 18 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++		vin-supply = <&vcc5v>;
++	};
++
++	wifi_3v3: regulator-wifi-3v3 {
++		compatible = "regulator-fixed";
++		/*
++		 * Leave GPIO47/CHIP_EN unclaimed. The module's internal pull-up
++		 * sequences it after this rail; driving it early can back-power it.
++		 */
++		regulator-name = "wifi_3v3";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&sysgpio 46 GPIO_ACTIVE_LOW>;
++		regulator-always-on;
++		regulator-boot-on;
++		vin-supply = <&vcc_3v3>;
++	};
++};
++
++&camss {
++	status = "okay";
++};
++
++&camss_csi_in {
++	camss_from_csi2rx: endpoint {
++		remote-endpoint = <&csi2rx_out>;
++	};
++};
++
++&cpus {
++	timebase-frequency = <4000000>;
++};
++
++&csi2rx {
++	assigned-clocks = <&ispcrg JH7110_ISPCLK_VIN_SYS>;
++	assigned-clock-rates = <297000000>;
++	status = "okay";
++
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		port@0 {
++			reg = <0>;
++
++			csi2rx_in: endpoint {
++				remote-endpoint = <&camera_mux_out>;
++				bus-type = <4>;
++				clock-lanes = <0>;
++				/* Maximum wiring; the mux reports the active subset. */
++				data-lanes = <2 1>;
++			};
++		};
++
++		port@1 {
++			reg = <1>;
++
++			csi2rx_out: endpoint {
++				remote-endpoint = <&camss_from_csi2rx>;
++			};
++		};
++	};
++};
++
++&dc8200 {
++	status = "okay";
++};
++
++&dc_out0 {
++	dc_to_dsi: endpoint {
++		remote-endpoint = <&dsi_from_dc>;
++	};
++};
++
++&dsi_in {
++	dsi_from_dc: endpoint {
++		remote-endpoint = <&dc_to_dsi>;
++	};
++};
++
++&dsi_out {
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	dsi_to_panel: endpoint@0 {
++		reg = <0>;
++		remote-endpoint = <&panel_from_dsi>;
++	};
++};
++
++&dvp_clk {
++	clock-frequency = <74250000>;
++};
++
++&gmac0_rgmii_rxin {
++	clock-frequency = <125000000>;
++};
++
++&gmac0_rmii_refin {
++	clock-frequency = <50000000>;
++};
++
++&gmac1_rgmii_rxin {
++	clock-frequency = <125000000>;
++};
++
++&gmac1_rmii_refin {
++	clock-frequency = <50000000>;
++};
++
++&gpu {
++	status = "okay";
++};
++
++&hdmitx0_pixelclk {
++	clock-frequency = <297000000>;
++};
++
++&i2c0 {
++	clock-frequency = <100000>;
++	i2c-sda-hold-time-ns = <300>;
++	i2c-sda-falling-time-ns = <510>;
++	i2c-scl-falling-time-ns = <510>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c0_pins>;
++	status = "okay";
++
++	es8316: audio-codec@11 {
++		compatible = "everest,es8316";
++		reg = <0x11>;
++		clocks = <&mclk_ext>;
++		clock-names = "mclk";
++		#sound-dai-cells = <0>;
++	};
++};
++
++&i2c2 {
++	clock-frequency = <100000>;
++	i2c-sda-hold-time-ns = <300>;
++	i2c-sda-falling-time-ns = <510>;
++	i2c-scl-falling-time-ns = <510>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c2_pins>;
++	status = "okay";
++
++	touchscreen@14 {
++		compatible = "goodix,gt911";
++		reg = <0x14>;
++		interrupt-parent = <&sysgpio>;
++		interrupts = <30 IRQ_TYPE_EDGE_FALLING>;
++		irq-gpios = <&sysgpio 30 GPIO_ACTIVE_HIGH>;
++		reset-gpios = <&sysgpio 31 GPIO_ACTIVE_HIGH>;
++		AVDD28-supply = <&vcc_3v3>;
++		VDDIO-supply = <&gpio_vdd>;
++		panel = <&panel>;
++	};
++};
++
++&i2c5 {
++	clock-frequency = <100000>;
++	i2c-sda-hold-time-ns = <300>;
++	i2c-sda-falling-time-ns = <510>;
++	i2c-scl-falling-time-ns = <510>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c5_pins>;
++	status = "okay";
++
++	axp15060: pmic@36 {
++		compatible = "x-powers,axp15060";
++		reg = <0x36>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++
++		regulators {
++			mipi_0p9: aldo1 {
++				regulator-name = "mipi_0p9";
++				regulator-min-microvolt = <900000>;
++				regulator-max-microvolt = <900000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			gmac1_1p8: aldo2 {
++				regulator-name = "vdd1825_gmac1";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			hdmi_1p8: aldo3 {
++				regulator-name = "hdmi_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-boot-on;
++			};
++
++			emmc_vdd: aldo4 {
++				regulator-name = "emmc_vdd";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			hdmi_0p9: aldo5 {
++				regulator-name = "hdmi_0p9";
++				regulator-min-microvolt = <900000>;
++				regulator-max-microvolt = <900000>;
++				regulator-boot-on;
++			};
++
++			ddr_1p8: bldo1 {
++				regulator-name = "vdd1v8_ddr";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			camera_io_1p8: bldo2 {
++				regulator-name = "vcc_1v8_1";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			io_1p8: bldo3 {
++				regulator-name = "io_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			top_1p8: bldo4 {
++				regulator-name = "top_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			aon_1p8: bldo5 {
++				regulator-name = "aon_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			mipi_rx_0p9: cldo1 {
++				regulator-name = "mipi_rx_0p9";
++				regulator-min-microvolt = <900000>;
++				regulator-max-microvolt = <900000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			mipi_tx_1p8: cldo2 {
++				regulator-name = "mipi_tx_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			mipi_rx_1p8: cldo3 {
++				regulator-name = "mipi_rx_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			gpio_vdd: cldo4 {
++				/*
++				 * The official sheets conflict: the touchscreen calls
++				 * this a 1.8 V domain, while the codec rail derived from
++				 * it is named 3.3 V. Preserve the firmware-selected
++				 * voltage pending BOM confirmation or board measurement.
++				 */
++				regulator-name = "vdd1833_gpio";
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			vcc_3v3: dcdc1 {
++				regulator-name = "vcc_3v3";
++				regulator-min-microvolt = <3300000>;
++				regulator-max-microvolt = <3300000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			vdd_cpu: dcdc2 {
++				regulator-name = "vdd_cpu";
++				regulator-min-microvolt = <500000>;
++				regulator-max-microvolt = <1540000>;
++				regulator-always-on;
++			};
++
++			aon_0p9: dcdc3 {
++				regulator-name = "aon_0p9";
++				regulator-min-microvolt = <900000>;
++				regulator-max-microvolt = <900000>;
++				regulator-always-on;
++			};
++
++			ddr_vcc: dcdc4 {
++				regulator-name = "ddr_vcc";
++				regulator-min-microvolt = <1100000>;
++				regulator-max-microvolt = <1100000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			top_0p9: dcdc5 {
++				regulator-name = "vdd09_top";
++				regulator-min-microvolt = <900000>;
++				regulator-max-microvolt = <900000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			io_3p3: dcdc6 {
++				regulator-name = "io_3p3";
++				regulator-min-microvolt = <3300000>;
++				regulator-max-microvolt = <3300000>;
++				regulator-always-on;
++			};
++		};
++	};
++
++	charger: charger@6a {
++		compatible = "southchip,sc89890h";
++		reg = <0x6a>;
++		interrupt-parent = <&sysgpio>;
++		interrupts = <48 IRQ_TYPE_EDGE_FALLING>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&charger_irq_pins>;
++		ti,battery-regulation-voltage = <4350000>;
++		ti,charge-current = <1500000>;
++		ti,termination-current = <180000>;
++		ti,precharge-current = <180000>;
++		ti,minimum-sys-voltage = <3500000>;
++		ti,boost-voltage = <5000000>;
++		ti,boost-max-current = <1200000>;
++
++		charger_otg_vbus: usb-otg-vbus {
++			regulator-name = "usb-otg-vbus";
++			enable-gpios = <&sysgpio 52 GPIO_ACTIVE_HIGH>;
++		};
++	};
++
++	fuel-gauge@62 {
++		compatible = "cellwise,cw2015";
++		reg = <0x62>;
++		interrupt-parent = <&sysgpio>;
++		interrupts = <60 IRQ_TYPE_EDGE_FALLING>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&fuel_gauge_pins>;
++		cellwise,battery-profile = /bits/ 8 <
++			0x17 0x67 0x6c 0x68 0x66 0x64 0x63 0x5d
++			0x64 0x6c 0x4b 0x58 0x59 0x4d 0x42 0x3a
++			0x30 0x28 0x23 0x1d 0x24 0x2c 0x3c 0x4a
++			0x30 0x21 0x0c 0xcd 0x30 0x50 0x52 0x6a
++			0x73 0x70 0x70 0x73 0x40 0x1b 0x65 0x3d
++			0x0a 0x28 0x25 0x55 0x84 0x93 0x97 0x19
++			0x41 0x7d 0x97 0xaf 0x80 0x8c 0xae 0xcb
++			0x2f 0x00 0x64 0xa5 0xb5 0x11 0xf0 0x39
++		>;
++		cellwise,alert-low-soc-level = <3>;
++		cellwise,monitor-interval-ms = <5000>;
++		monitored-battery = <&bat>;
++		power-supplies = <&charger>;
++	};
++
++	eeprom@50 {
++		compatible = "atmel,24c04";
++		reg = <0x50>;
++		pagesize = <16>;
++	};
++};
++
++&i2c6 {
++	clock-frequency = <100000>;
++	i2c-sda-hold-time-ns = <300>;
++	i2c-sda-falling-time-ns = <510>;
++	i2c-scl-falling-time-ns = <510>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c6_pins>;
++	status = "okay";
++
++	gc02m2: camera@37 {
++		compatible = "galaxycore,gc02m2";
++		reg = <0x37>;
++		clocks = <&clk_ext_camera>;
++		clock-names = "xvclk";
++		avdd-supply = <&camera_avdd>;
++		dovdd-supply = <&camera_io_1p8>;
++		dvdd-supply = <&camera_io_1p8>;
++		reset-gpios = <&sysgpio 33 GPIO_ACTIVE_HIGH>;
++		powerdown-gpios = <&sysgpio 25 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&gc02m2_pins>;
++
++		port {
++			gc02m2_out: endpoint {
++				remote-endpoint = <&camera_mux_from_gc02m2>;
++				bus-type = <4>;
++				clock-lanes = <0>;
++				data-lanes = <1>;
++				link-frequencies = /bits/ 64 <336000000>;
++			};
++		};
++	};
++
++	ov5640: camera@3c {
++		compatible = "ovti,ov5640";
++		reg = <0x3c>;
++		clocks = <&clk_ext_camera>;
++		clock-names = "xclk";
++		AVDD-supply = <&camera_avdd>;
++		DOVDD-supply = <&camera_io_1p8>;
++		DVDD-supply = <&camera_dvdd>;
++		powerdown-gpios = <&sysgpio 22 GPIO_ACTIVE_HIGH>;
++		reset-gpios = <&sysgpio 34 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&ov5640_pins>;
++		rotation = <0>;
++
++		port {
++			ov5640_out: endpoint {
++				remote-endpoint = <&camera_mux_from_ov5640>;
++				bus-type = <4>;
++				clock-lanes = <0>;
++				data-lanes = <2 1>;
++				lane-polarities = <0 0 0>;
++			};
++		};
++	};
++};
++
++&i2srx {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2srx_pins>;
++	status = "okay";
++};
++
++&i2srx_bclk_ext {
++	clock-frequency = <12288000>;
++};
++
++&i2srx_lrck_ext {
++	clock-frequency = <96000>;
++};
++
++&i2stx1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2stx1_pins>;
++	status = "okay";
++};
++
++&i2stx_bclk_ext {
++	clock-frequency = <12288000>;
++};
++
++&i2stx_lrck_ext {
++	clock-frequency = <96000>;
++};
++
++&mclk_ext {
++	clock-frequency = <12288000>;
++};
++
++&mipi_dphy {
++	status = "okay";
++};
++
++&mipi_dsi {
++	status = "okay";
++
++	panel: panel@0 {
++		compatible = "boe,th101mb31ig002-28a";
++		reg = <0>;
++		backlight = <&backlight>;
++		enable-gpios = <&sysgpio 37 GPIO_ACTIVE_HIGH>;
++		power-supply = <&vcc_3v3>;
++		rotation = <90>;
++
++		port {
++			panel_from_dsi: endpoint {
++				remote-endpoint = <&dsi_to_panel>;
++			};
++		};
++	};
++};
++
++&mmc0 {
++	max-frequency = <100000000>;
++	assigned-clocks = <&syscrg JH7110_SYSCLK_SDIO0_SDCARD>;
++	assigned-clock-rates = <50000000>;
++	bus-width = <8>;
++	cap-mmc-highspeed;
++	cap-mmc-hw-reset;
++	mmc-ddr-1_8v;
++	mmc-hs200-1_8v;
++	non-removable;
++	post-power-on-delay-ms = <200>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&mmc0_pins>;
++	vmmc-supply = <&vcc_3v3>;
++	vqmmc-supply = <&emmc_vdd>;
++	status = "okay";
++};
++
++&mmc1 {
++	max-frequency = <100000000>;
++	assigned-clocks = <&syscrg JH7110_SYSCLK_SDIO1_SDCARD>;
++	assigned-clock-rates = <50000000>;
++	bus-width = <4>;
++	cap-sd-highspeed;
++	cd-gpios = <&sysgpio 41 GPIO_ACTIVE_LOW>;
++	disable-wp;
++	no-mmc;
++	no-sdio;
++	post-power-on-delay-ms = <200>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&mmc1_pins>;
++	vmmc-supply = <&vcc_3v3>;
++	vqmmc-supply = <&gpio_vdd>;
++	status = "okay";
++};
++
++&osc {
++	clock-frequency = <24000000>;
++};
++
++&pcie0 {
++	/* The PCIe0 multiphy is routed to the USB 3.0 Type-C connector. */
++	status = "disabled";
++};
++
++&pcie1 {
++	perst-gpios = <&sysgpio 28 GPIO_ACTIVE_LOW>;
++	phys = <&pciephy1>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&pcie1_pins>;
++	vpcie3v3-supply = <&vcc3v3_pcie>;
++	status = "okay";
++};
++
++&pwm0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pinetab_pwm0_pins>;
++	status = "okay";
++};
++
++&qspi {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	status = "okay";
++
++	flash@0 {
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		cdns,read-delay = <5>;
++		spi-max-frequency = <12000000>;
++		cdns,tshsl-ns = <1>;
++		cdns,tsd2d-ns = <1>;
++		cdns,tchsh-ns = <1>;
++		cdns,tslch-ns = <1>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "spl";
++				reg = <0x0 0x80000>;
++			};
++
++			partition@f0000 {
++				label = "u-boot-env";
++				reg = <0xf0000 0x10000>;
++			};
++
++			partition@100000 {
++				label = "u-boot";
++				reg = <0x100000 0x400000>;
++			};
++
++			partition@600000 {
++				label = "reserved-data";
++				reg = <0x600000 0xa00000>;
++			};
++		};
++	};
++};
++
++&rtc_osc {
++	clock-frequency = <32768>;
++};
++
++&sfctemp {
++	status = "okay";
++};
++
++&syscrg {
++	assigned-clocks = <&syscrg JH7110_SYSCLK_CPU_ROOT>,
++			  <&syscrg JH7110_SYSCLK_BUS_ROOT>,
++			  <&syscrg JH7110_SYSCLK_PERH_ROOT>,
++			  <&syscrg JH7110_SYSCLK_QSPI_REF>,
++			  <&syscrg JH7110_SYSCLK_CPU_CORE>,
++			  <&pllclk JH7110_PLLCLK_PLL0_OUT>;
++	assigned-clock-parents = <&pllclk JH7110_PLLCLK_PLL0_OUT>,
++				 <&pllclk JH7110_PLLCLK_PLL2_OUT>,
++				 <&pllclk JH7110_PLLCLK_PLL2_OUT>,
++				 <&syscrg JH7110_SYSCLK_QSPI_REF_SRC>;
++	assigned-clock-rates = <0>, <0>, <0>, <0>, <500000000>,
++			       <1500000000>;
++};
++
++&tdm_ext {
++	clock-frequency = <49152000>;
++};
++
++&sysgpio {
++	camera_selector_pins: camera-selector-0 {
++		mux-pins {
++			pinmux = <GPIOMUX(53, GPOUT_LOW,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			input-disable;
++		};
++	};
++
++	gc02m2_pins: gc02m2-0 {
++		powerdown-pins {
++			pinmux = <GPIOMUX(25, GPOUT_HIGH,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			input-disable;
++		};
++
++		reset-pins {
++			pinmux = <GPIOMUX(33, GPOUT_HIGH,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			input-disable;
++		};
++	};
++
++	fuel_gauge_pins: fuel-gauge-0 {
++		alert-pins {
++			pinmux = <GPIOMUX(60, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			drive-strength = <2>;
++			input-enable;
++			input-schmitt-enable;
++			slew-rate = <0>;
++		};
++	};
++
++	charger_irq_pins: charger-irq-0 {
++		interrupt-pins {
++			pinmux = <GPIOMUX(48, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			drive-strength = <2>;
++			input-enable;
++			input-schmitt-enable;
++			slew-rate = <0>;
++		};
++	};
++
++	i2c0_pins: i2c0-0 {
++		i2c-pins {
++			pinmux = <GPIOMUX(57, GPOUT_LOW,
++					      GPOEN_SYS_I2C0_CLK,
++					      GPI_SYS_I2C0_CLK)>,
++				 <GPIOMUX(58, GPOUT_LOW,
++					      GPOEN_SYS_I2C0_DATA,
++					      GPI_SYS_I2C0_DATA)>;
++			bias-disable;
++			input-enable;
++			input-schmitt-enable;
++		};
++	};
++
++	i2c2_pins: i2c2-0 {
++		i2c-pins {
++			pinmux = <GPIOMUX(3, GPOUT_LOW,
++					      GPOEN_SYS_I2C2_CLK,
++					      GPI_SYS_I2C2_CLK)>,
++				 <GPIOMUX(2, GPOUT_LOW,
++					      GPOEN_SYS_I2C2_DATA,
++					      GPI_SYS_I2C2_DATA)>;
++			bias-disable;
++			input-enable;
++			input-schmitt-enable;
++		};
++	};
++
++	i2c5_pins: i2c5-0 {
++		i2c-pins {
++			pinmux = <GPIOMUX(19, GPOUT_LOW,
++					      GPOEN_SYS_I2C5_CLK,
++					      GPI_SYS_I2C5_CLK)>,
++				 <GPIOMUX(20, GPOUT_LOW,
++					      GPOEN_SYS_I2C5_DATA,
++					      GPI_SYS_I2C5_DATA)>;
++			bias-disable;
++			input-enable;
++			input-schmitt-enable;
++		};
++	};
++
++	i2c6_pins: i2c6-0 {
++		i2c-pins {
++			pinmux = <GPIOMUX(16, GPOUT_LOW,
++					      GPOEN_SYS_I2C6_CLK,
++					      GPI_SYS_I2C6_CLK)>,
++				 <GPIOMUX(17, GPOUT_LOW,
++					      GPOEN_SYS_I2C6_DATA,
++					      GPI_SYS_I2C6_DATA)>;
++			bias-disable;
++			input-enable;
++			input-schmitt-enable;
++		};
++	};
++
++	i2s_clk_pins: i2s-clk-0 {
++		bclk-lrck-pins {
++			pinmux = <GPIOMUX(38, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_I2STX1_BCLK)>,
++				 <GPIOMUX(38, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_I2SRX_BCLK)>,
++				 <GPIOMUX(63, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_I2STX1_LRCK)>,
++				 <GPIOMUX(63, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_I2SRX_LRCK)>;
++			input-enable;
++		};
++	};
++
++	i2s_mclk_ext_pins: i2s-mclk-ext-0 {
++		mclk-pins {
++			pinmux = <GPIOMUX(4, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_MCLK_EXT)>;
++			input-enable;
++		};
++	};
++
++	i2srx_pins: i2srx-0 {
++		data-pins {
++			pinmux = <GPIOMUX(61, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_I2SRX_SDIN0)>;
++			input-enable;
++		};
++	};
++
++	i2stx1_pins: i2stx1-0 {
++		data-pins {
++			pinmux = <GPIOMUX(44, GPOUT_SYS_I2STX1_SDO0,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			input-disable;
++		};
++	};
++
++	mmc0_pins: mmc0-0 {
++		reset-pins {
++			pinmux = <GPIOMUX(62, GPOUT_SYS_SDIO0_RST,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-pull-up;
++			drive-strength = <12>;
++			input-disable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++
++		mmc-pins {
++			pinmux = <PINMUX(PAD_SD0_CLK, 0)>,
++				 <PINMUX(PAD_SD0_CMD, 0)>,
++				 <PINMUX(PAD_SD0_DATA0, 0)>,
++				 <PINMUX(PAD_SD0_DATA1, 0)>,
++				 <PINMUX(PAD_SD0_DATA2, 0)>,
++				 <PINMUX(PAD_SD0_DATA3, 0)>,
++				 <PINMUX(PAD_SD0_DATA4, 0)>,
++				 <PINMUX(PAD_SD0_DATA5, 0)>,
++				 <PINMUX(PAD_SD0_DATA6, 0)>,
++				 <PINMUX(PAD_SD0_DATA7, 0)>;
++			bias-pull-up;
++			drive-strength = <12>;
++			input-enable;
++		};
++	};
++
++	mmc1_pins: mmc1-0 {
++		cd-pins {
++			pinmux = <GPIOMUX(41, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>;
++			bias-pull-up;
++			drive-strength = <2>;
++			input-enable;
++			input-schmitt-enable;
++			slew-rate = <0>;
++		};
++
++		clock-pins {
++			pinmux = <GPIOMUX(10, GPOUT_SYS_SDIO1_CLK,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-pull-up;
++			drive-strength = <12>;
++			input-disable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++
++		mmc-pins {
++			pinmux = <GPIOMUX(9, GPOUT_SYS_SDIO1_CMD,
++					      GPOEN_SYS_SDIO1_CMD,
++					      GPI_SYS_SDIO1_CMD)>,
++				 <GPIOMUX(11, GPOUT_SYS_SDIO1_DATA0,
++					      GPOEN_SYS_SDIO1_DATA0,
++					      GPI_SYS_SDIO1_DATA0)>,
++				 <GPIOMUX(12, GPOUT_SYS_SDIO1_DATA1,
++					      GPOEN_SYS_SDIO1_DATA1,
++					      GPI_SYS_SDIO1_DATA1)>,
++				 <GPIOMUX(7, GPOUT_SYS_SDIO1_DATA2,
++					      GPOEN_SYS_SDIO1_DATA2,
++					      GPI_SYS_SDIO1_DATA2)>,
++				 <GPIOMUX(8, GPOUT_SYS_SDIO1_DATA3,
++					      GPOEN_SYS_SDIO1_DATA3,
++					      GPI_SYS_SDIO1_DATA3)>;
++			bias-pull-up;
++			drive-strength = <12>;
++			input-enable;
++			input-schmitt-enable;
++			slew-rate = <0>;
++		};
++	};
++
++	ov5640_pins: ov5640-0 {
++		powerdown-pins {
++			pinmux = <GPIOMUX(22, GPOUT_HIGH,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			input-disable;
++		};
++
++		reset-pins {
++			pinmux = <GPIOMUX(34, GPOUT_HIGH,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			input-disable;
++		};
++	};
++
++	pcie1_pins: pcie1-0 {
++		clkreq-wake-pins {
++			pinmux = <GPIOMUX(21, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>,
++				 <GPIOMUX(26, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>;
++			bias-pull-up;
++			drive-strength = <2>;
++			input-enable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++
++		presence-pins {
++			pinmux = <GPIOMUX(29, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			drive-strength = <2>;
++			input-enable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++	};
++
++	pinetab_pwm0_pins: pwm0-0 {
++		pwm-pins {
++			pinmux = <GPIOMUX(45, GPOUT_SYS_PWM_CHANNEL0,
++					      GPOEN_SYS_PWM0_CHANNEL0,
++					      GPI_NONE)>;
++			bias-disable;
++			drive-strength = <12>;
++			input-disable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++	};
++
++	uart0_pins: uart0-0 {
++		tx-pins {
++			pinmux = <GPIOMUX(5, GPOUT_SYS_UART0_TX,
++					      GPOEN_ENABLE,
++					      GPI_NONE)>;
++			bias-disable;
++			drive-strength = <12>;
++			input-disable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++
++		rx-pins {
++			pinmux = <GPIOMUX(6, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_SYS_UART0_RX)>;
++			bias-disable;
++			drive-strength = <2>;
++			input-enable;
++			input-schmitt-enable;
++			slew-rate = <0>;
++		};
++
++	};
++
++	usb0_pins: usb0-0 {
++		usb-pins {
++			pinmux = <GPIOMUX(43, GPOUT_LOW,
++					      GPOEN_DISABLE,
++					      GPI_NONE)>;
++			bias-disable;
++		};
++	};
++};
++
++&uart0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart0_pins>;
++	status = "okay";
++};
++
++&usb0 {
++	dr_mode = "host";
++	pinctrl-names = "default";
++	pinctrl-0 = <&usb0_pins>;
++	status = "okay";
++};
++
++&usb_cdns3 {
++	phys = <&usbphy0>, <&pciephy0>;
++	phy-names = "cdns3,usb2-phy", "cdns3,usb3-phy";
++};
++
++&U74_1 {
++	cpu-supply = <&vdd_cpu>;
++};
++
++&U74_2 {
++	cpu-supply = <&vdd_cpu>;
++};
++
++&U74_3 {
++	cpu-supply = <&vdd_cpu>;
++};
++
++&U74_4 {
++	cpu-supply = <&vdd_cpu>;
++};
+-- 
+2.55.0
+

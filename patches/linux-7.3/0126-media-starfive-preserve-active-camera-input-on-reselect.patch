@@ -1,0 +1,65 @@
+From: Codex <noreply@openai.com>
+Date: Sat, 7 Nov 2026 10:00:00 +0000
+Subject: [PATCH] media: starfive: preserve active input on camera reselection
+
+A V4L2 client may select its current input while probing or reopening the
+camera. CAMSS unnecessarily reprogrammed that sensor, reset the ISP crop
+and capture sizes, or returned EBUSY when PipeWire retained its buffers.
+
+Resolve the selected link before testing queue ownership and return success
+without changing the pipeline when it is already active. Real sensor
+switches still reject either busy queue and retain rollback on failure.
+
+The regression exercises the actual driver function: idle and busy
+reselection must preserve a non-default crop and both capture formats.
+It fails on the prior driver, which resets the crop even on reselection.
+This fixes input selection semantics; it does not establish that either
+sensor is electrically operational on the reported tablet.
+
+Assisted-by: Codex (OpenAI)
+---
+
+diff --git a/drivers/staging/media/starfive/camss/stf-video.c b/drivers/staging/media/starfive/camss/stf-video.c
+--- a/drivers/staging/media/starfive/camss/stf-video.c
++++ b/drivers/staging/media/starfive/camss/stf-video.c
+@@ -439,15 +439,6 @@
+ 	if (!stf_video_is_yuv(video))
+ 		return -EINVAL;
+ 	mutex_lock(&stfcamss->media_dev.graph_mutex);
+-	ret = -EBUSY;
+-	for (i = 0; i < STF_CAPTURE_NUM; i++) {
+-		if (vb2_is_busy(&stfcamss->captures[i].video.vb2_q))
+-			goto out;
+-		saved_capture_formats[i] = stfcamss->captures[i].video.active_fmt;
+-	}
+-	if (media_entity_pipeline(&stfcamss->isp_dev.subdev.entity))
+-		goto out;
+-
+ 	ret = -ENOLINK;
+ 	mux = stf_video_find_subdev(video, MEDIA_ENT_F_VID_MUX);
+ 	if (!mux)
+@@ -464,6 +455,24 @@
+ 			break;
+ 		}
+ 	}
++
++	/*
++	 * V4L2 clients may reselect their current input after allocating buffers.
++	 * Keep its crop, formats and stream intact: no hardware change is needed.
++	 */
++	if (active_link == desired) {
++		ret = 0;
++		goto out;
++	}
++
++	ret = -EBUSY;
++	for (i = 0; i < STF_CAPTURE_NUM; i++) {
++		if (vb2_is_busy(&stfcamss->captures[i].video.vb2_q))
++			goto out;
++		saved_capture_formats[i] = stfcamss->captures[i].video.active_fmt;
++	}
++	if (media_entity_pipeline(&stfcamss->isp_dev.subdev.entity))
++		goto out;
+ 
+ 	ret = v4l2_subdev_call_state_active(&stfcamss->isp_dev.subdev,
+ 					    pad, get_selection, &saved_crop);

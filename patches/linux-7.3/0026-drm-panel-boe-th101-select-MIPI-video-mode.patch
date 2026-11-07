@@ -1,0 +1,32 @@
+From ee0e16beeb8dd2696fe4b2dc187b1c061e83ec0a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:32:26 +0100
+Subject: [PATCH 26/53] drm/panel: boe-th101: select MIPI video mode
+
+MIPI_DSI_MODE_VIDEO_BURST selects the packet format but does not select
+video mode. Set MIPI_DSI_MODE_VIDEO so hosts such as the JH7110 Cadence
+DSI wrapper start a video stream.
+
+Fixes: 420186db1483 ("drm/panel: Add driver for BOE TH101MB31IG002-28A panel")
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+index 14ef46534f3b2..0ce116d87a5fc 100644
+--- a/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
++++ b/drivers/gpu/drm/panel/panel-boe-th101mb31ig002-28a.c
+@@ -272,7 +272,8 @@ static const struct panel_desc boe_th101mb31ig002_desc = {
+ 	.modes = &boe_th101mb31ig002_default_mode,
+ 	.lanes = 4,
+ 	.format = MIPI_DSI_FMT_RGB888,
+-	.mode_flags = MIPI_DSI_MODE_VIDEO_BURST |
++	.mode_flags = MIPI_DSI_MODE_VIDEO |
++			  MIPI_DSI_MODE_VIDEO_BURST |
+ 			  MIPI_DSI_MODE_NO_EOT_PACKET |
+ 			  MIPI_DSI_MODE_LPM,
+ 	.init = boe_th101mb31ig002_enable,
+-- 
+2.55.0
+

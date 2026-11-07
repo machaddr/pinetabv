@@ -1,0 +1,149 @@
+From dcc279b280902e837fde41435e660ff77c98f9c9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:49:18 +0100
+Subject: [PATCH 38/53] media: video-mux: proxy active input bus configuration
+
+Receivers connected after a video mux need the selected transmitter bus
+configuration, including its active CSI-2 lane map and live link
+frequency.
+
+Proxy get_mbus_config to the active upstream subdevice and fall back to
+its firmware endpoint when the transmitter does not implement the
+operation.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/media/platform/video-mux.c | 103 +++++++++++++++++++++++++++++
+ 1 file changed, 103 insertions(+)
+
+diff --git a/drivers/media/platform/video-mux.c b/drivers/media/platform/video-mux.c
+index cba34893258a8..3accb76829fc3 100644
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -14,6 +14,7 @@
+ #include <linux/of_graph.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
++#include <media/v4l2-common.h>
+ #include <media/v4l2-async.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-fwnode.h>
+@@ -114,6 +115,107 @@ static const struct media_entity_operations video_mux_ops = {
+ 	.get_fwnode_pad = v4l2_subdev_get_fwnode_pad_1_to_1,
+ };
+ 
++static int
++video_mux_parse_mbus_config(struct video_mux *vmux, unsigned int input,
++			    struct v4l2_mbus_config *config)
++{
++	struct v4l2_fwnode_endpoint vep = {
++		.bus_type = V4L2_MBUS_UNKNOWN,
++	};
++	struct fwnode_handle *ep, *remote_ep;
++	int ret;
++
++	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(vmux->subdev.dev),
++					     input, 0,
++					     FWNODE_GRAPH_ENDPOINT_NEXT);
++	if (!ep)
++		return -ENOLINK;
++
++	remote_ep = fwnode_graph_get_remote_endpoint(ep);
++	fwnode_handle_put(ep);
++	if (!remote_ep)
++		return -ENOLINK;
++
++	ret = v4l2_fwnode_endpoint_parse(remote_ep, &vep);
++	fwnode_handle_put(remote_ep);
++	if (ret)
++		return ret;
++
++	config->type = vep.bus_type;
++	switch (vep.bus_type) {
++	case V4L2_MBUS_CSI1:
++	case V4L2_MBUS_CCP2:
++		config->bus.mipi_csi1 = vep.bus.mipi_csi1;
++		break;
++	case V4L2_MBUS_CSI2_DPHY:
++	case V4L2_MBUS_CSI2_CPHY:
++		config->bus.mipi_csi2 = vep.bus.mipi_csi2;
++		break;
++	case V4L2_MBUS_PARALLEL:
++	case V4L2_MBUS_BT656:
++		config->bus.parallel = vep.bus.parallel;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int video_mux_get_mbus_config(struct v4l2_subdev *sd,
++				     unsigned int pad,
++				     struct v4l2_mbus_config *config)
++{
++	struct video_mux *vmux = v4l2_subdev_to_video_mux(sd);
++	struct v4l2_subdev *upstream_sd;
++	struct media_pad *remote_pad;
++	unsigned int source_pad = sd->entity.num_pads - 1;
++	s64 link_freq;
++	int ret;
++
++	if (pad != source_pad)
++		return -EINVAL;
++
++	mutex_lock(&vmux->lock);
++
++	if (vmux->active < 0) {
++		ret = -ENOLINK;
++		goto out;
++	}
++
++	remote_pad = media_pad_remote_pad_first(&vmux->pads[vmux->active]);
++	if (!remote_pad) {
++		ret = -ENOLINK;
++		goto out;
++	}
++
++	if (!is_media_entity_v4l2_subdev(remote_pad->entity)) {
++		ret = -ENODEV;
++		goto out;
++	}
++
++	upstream_sd = media_entity_to_v4l2_subdev(remote_pad->entity);
++	ret = v4l2_subdev_call(upstream_sd, pad, get_mbus_config,
++			       remote_pad->index, config);
++	if (ret == -ENOIOCTLCMD)
++		ret = video_mux_parse_mbus_config(vmux, vmux->active, config);
++	if (ret)
++		goto out;
++
++	link_freq = v4l2_get_link_freq(remote_pad, 0, 0);
++	if (link_freq < 0) {
++		ret = link_freq == -ENOENT ? 0 : link_freq;
++		goto out;
++	}
++
++	config->link_freq = link_freq;
++
++out:
++	mutex_unlock(&vmux->lock);
++
++	return ret;
++}
++
+ static int video_mux_s_stream(struct v4l2_subdev *sd, int enable)
+ {
+ 	struct video_mux *vmux = v4l2_subdev_to_video_mux(sd);
+@@ -304,6 +406,7 @@ static int video_mux_init_state(struct v4l2_subdev *sd,
+ static const struct v4l2_subdev_pad_ops video_mux_pad_ops = {
+ 	.get_fmt = v4l2_subdev_get_fmt,
+ 	.set_fmt = video_mux_set_format,
++	.get_mbus_config = video_mux_get_mbus_config,
+ };
+ 
+ static const struct v4l2_subdev_ops video_mux_subdev_ops = {
+-- 
+2.55.0
+

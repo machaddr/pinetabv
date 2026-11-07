@@ -1,0 +1,40 @@
+From 078652a534e8d78c2d0ba95deb664f605f2a6e2e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Tue, 11 Aug 2026 09:18:13 +0100
+Subject: [PATCH 4/8] clk: starfive: propagate JH7110 DC pixel clock rates
+
+The Verisilicon DRM driver sets the requested mode rate on dc8200_pix0
+or dc8200_pix1. These clocks are gate/mux clocks, so the request does not
+reach the programmable dc8200_pix divider.
+
+Propagate rates to the selected parent without implicitly switching
+between the display divider and HDMI pixel clock. Device tree
+assigned-clock-parents selects the intended source.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/clk/starfive/clk-starfive-jh7110-vout.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/clk/starfive/clk-starfive-jh7110-vout.c b/drivers/clk/starfive/clk-starfive-jh7110-vout.c
+index bad20d5d794a7..aeba42cd3c44b 100644
+--- a/drivers/clk/starfive/clk-starfive-jh7110-vout.c
++++ b/drivers/clk/starfive/clk-starfive-jh7110-vout.c
+@@ -40,10 +40,12 @@ static const struct jh71x0_clk_data jh7110_voutclk_data[] = {
+ 	JH71X0_GATE(JH7110_VOUTCLK_DC8200_AXI, "dc8200_axi", 0, JH7110_VOUTCLK_VOUT_TOP_AXI),
+ 	JH71X0_GATE(JH7110_VOUTCLK_DC8200_CORE, "dc8200_core", 0, JH7110_VOUTCLK_VOUT_TOP_AXI),
+ 	JH71X0_GATE(JH7110_VOUTCLK_DC8200_AHB, "dc8200_ahb", 0, JH7110_VOUTCLK_VOUT_TOP_AHB),
+-	JH71X0_GMUX(JH7110_VOUTCLK_DC8200_PIX0, "dc8200_pix0", 0, 2,
++	JH71X0_GMUX(JH7110_VOUTCLK_DC8200_PIX0, "dc8200_pix0",
++		    CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT, 2,
+ 		    JH7110_VOUTCLK_DC8200_PIX,
+ 		    JH7110_VOUTCLK_HDMITX0_PIXELCLK),
+-	JH71X0_GMUX(JH7110_VOUTCLK_DC8200_PIX1, "dc8200_pix1", 0, 2,
++	JH71X0_GMUX(JH7110_VOUTCLK_DC8200_PIX1, "dc8200_pix1",
++		    CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT, 2,
+ 		    JH7110_VOUTCLK_DC8200_PIX,
+ 		    JH7110_VOUTCLK_HDMITX0_PIXELCLK),
+ 	/* LCD */
+-- 
+2.55.0
+

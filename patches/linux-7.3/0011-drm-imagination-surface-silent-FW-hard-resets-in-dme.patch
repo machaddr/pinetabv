@@ -1,0 +1,30 @@
+From c6103e5606476811708b8234e1c359fd516afe1a Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Sat, 2 May 2026 22:23:10 -0400
+Subject: [PATCH 11/53] drm/imagination: surface silent FW hard resets in dmesg
+
+Report firmware hard-reset requests before recovery starts. The message
+makes otherwise silent GPU resets visible when diagnosing JH7110 hangs.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_fw.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_fw.c b/drivers/gpu/drm/imagination/pvr_fw.c
+index 37b8204c605fd8a81c14fc35199a42d8d95c4851..70ea9af9d0acd27f1caa6022b5fa7467800d877a 100644
+--- a/drivers/gpu/drm/imagination/pvr_fw.c
++++ b/drivers/gpu/drm/imagination/pvr_fw.c
+@@ -1525,6 +1525,10 @@ pvr_fw_hard_reset(struct pvr_device *pvr_dev)
+ 	struct list_head *pos;
+ 	int err;
+ 
++	drm_warn(from_pvr_device(pvr_dev),
++		 "FW hard reset (called from %pS)\n",
++		 __builtin_return_address(0));
++
+ 	/* Reset all FW objects */
+ 	mutex_lock(&pvr_dev->fw_dev.fw_objs.lock);
+ 
+-- 
+2.53.0

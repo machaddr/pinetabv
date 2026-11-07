@@ -1,0 +1,41 @@
+From 2610051adbd18719d04e0282e69f87bb4638eb32 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 22 Aug 2026 15:53:22 +0100
+Subject: [PATCH 2/3] drm/bridge: cdns-dsi: deassert JH7110 RXESC reset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The StarFive vendor display driver deasserts the Cadence DSI RXESC
+reset before sending panel commands. Leaving it asserted can prevent the
+receive side used for command acknowledgements from operating.
+
+Add RXESC to the wrapper reset bulk. Order the array so the reset
+framework deasserts SYS, TXESC, RXESC and DPI, matching the vendor
+sequence. Keep TXBYTEHS last and asserted until the D-PHY high-speed
+path is ready.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+index cc97f9ecc6820..86a9450adeacd 100644
+--- a/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
++++ b/drivers/gpu/drm/bridge/cadence/cdns-dsi-jh7110.c
+@@ -19,9 +19,10 @@
+ #define JH7110_VOUT_SYSCON_LCD_TO_DSI	BIT(3)
+ 
+ static const char * const dsi_resets[] = {
+-	"sys",
+ 	"dpi",
++	"rxesc",
+ 	"txesc",
++	"sys",
+ 	"txbytehs",
+ };
+ 
+-- 
+2.55.0
+

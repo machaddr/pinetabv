@@ -1,0 +1,231 @@
+From 7367f9ff195a23b12098074807282cf172ce2bac Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sun, 9 Aug 2026 10:34:59 +0100
+Subject: [PATCH 45/53] power: supply: bq25890: handle SC89890H board controls
+
+Do not expose the SC89890H reserved temperature register, honor the
+opt-in manual input policy, and sequence an external OTG pin with
+OTG_CONFIG under the charger lock. Force both controls off during
+teardown.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/power/supply/bq25890_charger.c | 102 ++++++++++++++++++++++++-
+ 1 file changed, 100 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/power/supply/bq25890_charger.c b/drivers/power/supply/bq25890_charger.c
+index e3c32fd6b3d64..f1754236e387f 100644
+--- a/drivers/power/supply/bq25890_charger.c
++++ b/drivers/power/supply/bq25890_charger.c
+@@ -9,6 +9,7 @@
+ #include <linux/i2c.h>
+ #include <linux/power_supply.h>
+ #include <linux/power/bq25890_charger.h>
++#include <linux/property.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/driver.h>
+ #include <linux/types.h>
+@@ -126,10 +127,12 @@ struct bq25890_device {
+ 
+ 	struct regmap *rmap;
+ 	struct regmap_field *rmap_fields[F_MAX_FIELDS];
++	struct gpio_desc *otg_en_gpio;
+ 
+ 	bool skip_reset;
+ 	bool read_back_init_data;
+ 	bool iinlim_set;
++	bool disable_auto_dpdm;
+ 	bool force_hiz;
+ 	u32 pump_express_vbus_max;
+ 	u32 iinlim_percentage;
+@@ -728,6 +731,9 @@ static int bq25890_power_supply_get_property(struct power_supply *psy,
+ 		break;
+ 
+ 	case POWER_SUPPLY_PROP_TEMP:
++		if (bq->chip_version == SC89890H)
++			return -EINVAL;
++
+ 		ret = bq25890_field_read(bq, F_TSPCT);
+ 		if (ret < 0)
+ 			return ret;
+@@ -1019,6 +1025,16 @@ static int bq25890_hw_init(struct bq25890_device *bq)
+ 		}
+ 	}
+ 
++	if (bq->disable_auto_dpdm) {
++		ret = bq25890_field_write(bq, F_AUTO_DPDM_EN, 0);
++		if (ret < 0) {
++			dev_dbg(bq->dev,
++				"Disabling automatic input detection failed %d\n",
++				ret);
++			return ret;
++		}
++	}
++
+ 	/* disable watchdog */
+ 	ret = bq25890_field_write(bq, F_WD, 0);
+ 	if (ret < 0) {
+@@ -1075,6 +1091,24 @@ static const enum power_supply_property bq25890_power_supply_props[] = {
+ 	POWER_SUPPLY_PROP_TEMP,
+ };
+ 
++static const enum power_supply_property sc89890h_power_supply_props[] = {
++	POWER_SUPPLY_PROP_MANUFACTURER,
++	POWER_SUPPLY_PROP_MODEL_NAME,
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_CHARGE_TYPE,
++	POWER_SUPPLY_PROP_ONLINE,
++	POWER_SUPPLY_PROP_HEALTH,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX,
++	POWER_SUPPLY_PROP_PRECHARGE_CURRENT,
++	POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT,
++	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
++	POWER_SUPPLY_PROP_VOLTAGE_NOW,
++	POWER_SUPPLY_PROP_CURRENT_NOW,
++};
++
+ static char *bq25890_charger_supplied_to[] = {
+ 	"main-battery",
+ };
+@@ -1103,6 +1137,10 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
+ 	snprintf(bq->name, sizeof(bq->name), "bq25890-charger-%d", bq->id);
+ 	bq->desc = bq25890_power_supply_desc;
+ 	bq->desc.name = bq->name;
++	if (bq->chip_version == SC89890H) {
++		bq->desc.properties = sc89890h_power_supply_props;
++		bq->desc.num_properties = ARRAY_SIZE(sc89890h_power_supply_props);
++	}
+ 
+ 	psy_cfg.supplied_to = bq25890_charger_supplied_to;
+ 	psy_cfg.num_supplicants = ARRAY_SIZE(bq25890_charger_supplied_to);
+@@ -1114,11 +1152,37 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
+ 
+ static int bq25890_set_otg_cfg(struct bq25890_device *bq, u8 val)
+ {
++	int gpio_ret = 0;
+ 	int ret;
+ 
++	mutex_lock(&bq->lock);
++
++	if (val && bq->otg_en_gpio) {
++		ret = gpiod_set_value_cansleep(bq->otg_en_gpio, 1);
++		if (ret) {
++			gpio_ret = gpiod_set_value_cansleep(bq->otg_en_gpio, 0);
++			goto out_unlock;
++		}
++	}
++
+ 	ret = bq25890_field_write(bq, F_OTG_CFG, val);
++
++	/* Either low condition disables boost; always leave the pin safe. */
++	if (!val || ret < 0) {
++		if (bq->otg_en_gpio)
++			gpio_ret = gpiod_set_value_cansleep(bq->otg_en_gpio, 0);
++		if (!ret)
++			ret = gpio_ret;
++	}
++
++out_unlock:
++	mutex_unlock(&bq->lock);
++
+ 	if (ret < 0)
+ 		dev_err(bq->dev, "Error switching to boost/charger mode: %d\n", ret);
++	if (gpio_ret < 0 && gpio_ret != ret)
++		dev_err(bq->dev, "Error disabling OTG enable GPIO: %d\n",
++			gpio_ret);
+ 
+ 	return ret;
+ }
+@@ -1258,8 +1322,15 @@ static int bq25890_vbus_disable(struct regulator_dev *rdev)
+ static int bq25890_vbus_is_enabled(struct regulator_dev *rdev)
+ {
+ 	struct bq25890_device *bq = rdev_get_drvdata(rdev);
++	int ret;
+ 
+-	return bq25890_field_read(bq, F_OTG_CFG);
++	mutex_lock(&bq->lock);
++	ret = bq25890_field_read(bq, F_OTG_CFG);
++	if (ret > 0 && bq->otg_en_gpio)
++		ret = gpiod_get_value_cansleep(bq->otg_en_gpio);
++	mutex_unlock(&bq->lock);
++
++	return ret;
+ }
+ 
+ static int bq25890_vbus_get_voltage(struct regulator_dev *rdev)
+@@ -1465,11 +1536,23 @@ static int bq25890_fw_read_u32_props(struct bq25890_device *bq)
+ 
+ static int bq25890_fw_probe(struct bq25890_device *bq)
+ {
++	struct fwnode_handle *child;
+ 	int ret;
+ 	struct bq25890_init_data *init = &bq->init_data;
+ 	const char *str;
+ 	u32 val;
+ 
++	child = device_get_named_child_node(bq->dev, "usb-otg-vbus");
++	if (child) {
++		bq->otg_en_gpio =
++			devm_fwnode_gpiod_get_optional(bq->dev, child, "enable",
++						       GPIOD_OUT_LOW,
++						       "usb-otg-vbus");
++		fwnode_handle_put(child);
++		if (IS_ERR(bq->otg_en_gpio))
++			return PTR_ERR(bq->otg_en_gpio);
++	}
++
+ 	ret = device_property_read_string(bq->dev, "linux,secondary-charger-name", &str);
+ 	if (ret == 0) {
+ 		bq->secondary_chrg = power_supply_get_by_name(str);
+@@ -1493,6 +1576,8 @@ static int bq25890_fw_probe(struct bq25890_device *bq)
+ 	}
+ 
+ 	bq->skip_reset = device_property_read_bool(bq->dev, "linux,skip-reset");
++	bq->disable_auto_dpdm =
++		device_property_read_bool(bq->dev, "ti,disable-auto-dpdm");
+ 
+ 	if (device_property_present(bq->dev,
+ 				    "input-current-limit-microamp")) {
+@@ -1526,6 +1611,7 @@ static void bq25890_non_devm_cleanup(void *data)
+ 	struct bq25890_device *bq = data;
+ 
+ 	cancel_delayed_work_sync(&bq->pump_express_work);
++	bq25890_set_otg_cfg(bq, 0);
+ 
+ 	if (bq->id >= 0) {
+ 		mutex_lock(&bq25890_id_mutex);
+@@ -1631,6 +1717,8 @@ static void bq25890_remove(struct i2c_client *client)
+ 		cancel_work_sync(&bq->usb_work);
+ 	}
+ 
++	bq25890_set_otg_cfg(bq, 0);
++
+ 	if (!bq->skip_reset) {
+ 		/* reset all registers to default values */
+ 		bq25890_chip_reset(bq);
+@@ -1646,8 +1734,18 @@ static void bq25890_shutdown(struct i2c_client *client)
+ 	 * introduce a function change for boards using the usb-phy framework.
+ 	 * This needs to be tested on such a board before making this change.
+ 	 */
+-	if (!IS_ERR_OR_NULL(bq->usb_phy))
++	if (!IS_ERR_OR_NULL(bq->usb_phy)) {
++		if (bq->otg_en_gpio) {
++			int ret;
++
++			ret = gpiod_set_value_cansleep(bq->otg_en_gpio, 0);
++			if (ret)
++				dev_err(bq->dev,
++					"Error disabling OTG enable GPIO: %d\n",
++					ret);
++		}
+ 		return;
++	}
+ 
+ 	/*
+ 	 * Turn off the 5v Boost regulator which outputs Vbus to the device's
+-- 
+2.55.0
+

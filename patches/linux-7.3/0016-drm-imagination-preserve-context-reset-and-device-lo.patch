@@ -1,0 +1,133 @@
+From 29392bf1123c5cead0f90ac2a7168a3642de0a8b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Sat, 1 Aug 2026 17:51:58 +0100
+Subject: [PATCH 16/53] drm/imagination: preserve context reset and device loss
+ semantics
+
+A firmware context-reset notification reports recovery of a particular
+context. Treating every such notification as a fatal device event cancels
+unrelated work and permanently disables the whole GPU.
+
+Leave context-reset notification handling to the existing diagnostic path.
+For genuinely fatal errors, restore drm_dev_unplug() in pvr_device_lost()
+so new userspace entry points are rejected using the DRM core lifetime
+rules.
+
+Remove the global fence-signalling helper as well. It changed scheduler
+counters and PM references without removing jobs from scheduler lists,
+leaving later completion processing able to account the same jobs again.
+
+Assisted-by: Codex:gpt-5
+---
+ drivers/gpu/drm/imagination/pvr_ccb.c   |  4 ----
+ drivers/gpu/drm/imagination/pvr_power.c |  7 ++++++-
+ drivers/gpu/drm/imagination/pvr_queue.c | 31 -------------------------------
+ drivers/gpu/drm/imagination/pvr_queue.h |  2 --
+ 4 files changed, 6 insertions(+), 38 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_ccb.c b/drivers/gpu/drm/imagination/pvr_ccb.c
+index a367ee5055984c138b754f230e8310026b8e40a4..0eca715de3f84eb0a72404b293cb4359d1244c48 100644
+--- a/drivers/gpu/drm/imagination/pvr_ccb.c
++++ b/drivers/gpu/drm/imagination/pvr_ccb.c
+@@ -9,13 +9,11 @@
+ #include "pvr_fw.h"
+ #include "pvr_gem.h"
+ #include "pvr_power.h"
+-#include "pvr_queue.h"
+ 
+ #include <drm/drm_managed.h>
+ #include <drm/drm_print.h>
+ #include <linux/compiler.h>
+ #include <linux/delay.h>
+-#include <linux/errno.h>
+ #include <linux/jiffies.h>
+ #include <linux/kernel.h>
+ #include <linux/mutex.h>
+@@ -171,8 +169,6 @@ process_fwccb_command(struct pvr_device *pvr_dev, struct rogue_fwif_fwccb_cmd *c
+ 	case ROGUE_FWIF_FWCCB_CMD_CONTEXT_RESET_NOTIFICATION:
+ 		pvr_dump_context_reset_notification(pvr_dev,
+ 						    &cmd->cmd_data.cmd_context_reset_notification);
+-		pvr_queues_fail_all_jobs(pvr_dev, -ECANCELED);
+-		pvr_device_lost(pvr_dev);
+ 		break;
+ 
+ 	default:
+diff --git a/drivers/gpu/drm/imagination/pvr_power.c b/drivers/gpu/drm/imagination/pvr_power.c
+index 687b68ae21ba009129a4d8989e010da8ce3d8f20..27acac9f6e477cbebd23687032fa92a578de0665 100644
+--- a/drivers/gpu/drm/imagination/pvr_power.c
++++ b/drivers/gpu/drm/imagination/pvr_power.c
+@@ -34,11 +34,16 @@
+ /**
+  * pvr_device_lost() - Mark GPU device as lost
+  * @pvr_dev: Target PowerVR device.
++ *
++ * This will cause the DRM device to be unplugged.
+  */
+ void
+ pvr_device_lost(struct pvr_device *pvr_dev)
+ {
+-	pvr_dev->lost = true;
++	if (!pvr_dev->lost) {
++		pvr_dev->lost = true;
++		drm_dev_unplug(from_pvr_device(pvr_dev));
++	}
+ }
+ 
+ static int
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.c b/drivers/gpu/drm/imagination/pvr_queue.c
+index 564ddda368cd02898037e24060b13e619ad55179..dbae09cd2742410ab9cfbf33286d9ed652f07576 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.c
++++ b/drivers/gpu/drm/imagination/pvr_queue.c
+@@ -999,37 +999,6 @@ pvr_queue_signal_done_fences(struct pvr_queue *queue)
+ 	spin_unlock(&queue->scheduler.job_list_lock);
+ }
+ 
+-/**
+- * pvr_queues_fail_all_jobs() - Fail every in-flight job's done_fence
+- * @pvr_dev: Target device.
+- * @err: Negative errno to attach to the fence.
+- */
+-void
+-pvr_queues_fail_all_jobs(struct pvr_device *pvr_dev, int err)
+-{
+-	struct pvr_queue *queue;
+-
+-	mutex_lock(&pvr_dev->queues.lock);
+-
+-	list_for_each_entry(queue, &pvr_dev->queues.active, node) {
+-		struct pvr_job *job, *tmp_job;
+-
+-		spin_lock(&queue->scheduler.job_list_lock);
+-		list_for_each_entry_safe(job, tmp_job, &queue->scheduler.pending_list,
+-					 base.list) {
+-			if (dma_fence_is_signaled(job->done_fence))
+-				continue;
+-			dma_fence_set_error(job->done_fence, err);
+-			dma_fence_signal(job->done_fence);
+-			pvr_job_release_pm_ref(job);
+-			atomic_dec(&queue->in_flight_job_count);
+-		}
+-		spin_unlock(&queue->scheduler.job_list_lock);
+-	}
+-
+-	mutex_unlock(&pvr_dev->queues.lock);
+-}
+-
+ /**
+  * pvr_queue_check_job_waiting_for_cccb_space() - Check if a job waiting for CCCB space
+  * can be unblocked and pushed to the CCCB.
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.h b/drivers/gpu/drm/imagination/pvr_queue.h
+index 66da44872d8253ae6797cb4a4600675e2f5dc8e5..8153e4c9c87628d7c3f96e2a3d512e04feec49c0 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.h
++++ b/drivers/gpu/drm/imagination/pvr_queue.h
+@@ -168,8 +168,6 @@ void pvr_queue_device_pre_reset(struct pvr_device *pvr_dev);
+ 
+ void pvr_queue_device_post_reset(struct pvr_device *pvr_dev);
+ 
+-void pvr_queues_fail_all_jobs(struct pvr_device *pvr_dev, int err);
+-
+ int pvr_queue_device_init(struct pvr_device *pvr_dev);
+ 
+ void pvr_queue_device_fini(struct pvr_device *pvr_dev);
+-- 
+2.53.0

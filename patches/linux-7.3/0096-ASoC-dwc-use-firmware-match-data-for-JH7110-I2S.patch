@@ -1,0 +1,56 @@
+From 7b7193758882fd581e07d6fe2ff12f486853618f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andr=C3=A9=20Machado?= <machaddr@falanet.org>
+Date: Mon, 24 Aug 2026 14:35:00 +0100
+Subject: [PATCH] ASoC: dwc: use firmware match data for JH7110 I2S
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The JH7110 I2S platform descriptions are stored in the OF match table,
+but dw_i2s_probe() only reads legacy platform_data.  Devices instantiated
+from Device Tree consequently miss their clock/reset initialization,
+fall through to the generic reset path with the I2S clocks stopped, and
+time out while deasserting reset.
+
+Use generic firmware match data when legacy platform data is absent.  Keep
+platform data first so existing board files retain their override behavior.
+This makes the JH7110 receive and transmit DAIs run their SoC-specific
+clock setup and allows dependent sound cards to finish probing.
+
+Assisted-by: Codex:gpt-5
+Signed-off-by: André Machado <machaddr@falanet.org>
+---
+ sound/soc/dwc/dwc-i2s.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/dwc/dwc-i2s.c b/sound/soc/dwc/dwc-i2s.c
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -18,6 +18,7 @@
+ #include <linux/reset.h>
+ #include <linux/slab.h>
+ #include <linux/pm_runtime.h>
++#include <linux/property.h>
+ #include <sound/designware_i2s.h>
+ #include <sound/pcm.h>
+ #include <sound/pcm_params.h>
+@@ -913,13 +914,16 @@ static int jh7110_i2stx0_clk_cfg(struct i2s_clk_config_data *config)
+ 
+ static int dw_i2s_probe(struct platform_device *pdev)
+ {
+-	const struct i2s_platform_data *pdata = pdev->dev.platform_data;
++	const struct i2s_platform_data *pdata = dev_get_platdata(&pdev->dev);
+ 	struct dw_i2s_dev *dev;
+ 	struct resource *res;
+ 	int ret, irq;
+ 	struct snd_soc_dai_driver *dw_i2s_dai;
+ 	const char *clk_id;
+ 
++	if (!pdata)
++		pdata = device_get_match_data(&pdev->dev);
++
+ 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
+ 	if (!dev)
+ 		return -ENOMEM;
+-- 
+2.55.0
